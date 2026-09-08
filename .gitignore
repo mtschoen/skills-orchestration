@@ -5,6 +5,7 @@ workspace/
 __pycache__/
 *.pyc
 *.pyo
+.coverage
 
 # OS
 .DS_Store
