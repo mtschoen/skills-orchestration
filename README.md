@@ -1,6 +1,6 @@
 # Orchestration
 
-Six skills for what changes when work outgrows one agent, one machine, or one
+Seven skills for what changes when work outgrows one agent, one machine, or one
 budget.
 
 Single-agent practice does not scale by repetition. The moment a second agent
@@ -18,6 +18,7 @@ These skills are about the seams between agents, machines, and budgets.
 | [`review-in-parallel-pipelines`](review-in-parallel-pipelines/) | The merge point, where independently-green branches meet |
 | [`project-lock`](project-lock/) | Two agents wanting the same checkout |
 | [`agent-remote`](agent-remote/) | Work that physically cannot run on this host |
+| [`remote-handoff`](remote-handoff/) | Leaving this machine while the next session must still run on it |
 | [`external-harness-routing`](external-harness-routing/) | Which provider's quota a job should spend |
 | [`cost-estimator`](cost-estimator/) | What the quota actually went on |
 
