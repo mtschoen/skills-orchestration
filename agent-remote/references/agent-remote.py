@@ -15,16 +15,19 @@ Usage:
         [--branch agent-remote/nvbw-2026-04-07] \
         [--permission-mode acceptEdits] \
         [--agent opencode] \
-        [--model ollama/qwen3.5-9b]
+        [--model ollama/qwen3.5-9b] \
+        [--os auto|windows|posix]
 
     agent-remote.py cleanup \
         --host user@remote-host \
         --branch agent-remote/nvbw-2026-04-07 \
-        --repo-path ~/myrepo
+        --repo-path ~/myrepo \
+        [--os auto|windows|posix]
 
     agent-remote.py probe \
         --host user@remote-host \
-        --repo-path ~/myrepo
+        --repo-path ~/myrepo \
+        [--os auto|windows|posix]
 
 `run` returns a JSON result on stdout with:
     host, branch, worktree_path, parent_commit, new_commit (or null),
@@ -36,20 +39,24 @@ Environment variables:
                                   (otherwise that mode is refused)
     REMOTE_AGENT_TIMEOUT=3600     Max seconds for the remote agent run
                                   (default 3600)
+    REMOTE_AGENT_OS=windows|posix Force remote OS type
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import ntpath
 import os
+import posixpath
 
 # CRITICAL: must run before any subprocess imports/usage so the child env
 # inherits the override. On Windows + Git Bash / MSYS, ssh.exe's argv is
 # preprocessed to convert any /foo/bar argument into C:/Program Files/Git/foo/bar,
 # mangling every absolute remote path. Setting these env vars on os.environ
 # (rather than just in subprocess.run's env=) ensures the override sticks
-# across the Python → ssh.exe boundary regardless of how subprocess builds
+# across the Python -> ssh.exe boundary regardless of how subprocess builds
 # the child env block on Windows.
 os.environ.setdefault("MSYS_NO_PATHCONV", "1")
 os.environ.setdefault("MSYS2_ARG_CONV_EXCL", "*")
@@ -125,16 +132,155 @@ class RunResult:
 
 
 # --------------------------------------------------------------------------
-# ssh helpers
+# ssh helpers & remote OS detection
 # --------------------------------------------------------------------------
 
 
-#: PATH prefix injected before every remote command. Ensures user-local
+#: PATH prefix injected before every remote POSIX command. Ensures user-local
 #: install dirs (~/.local/bin, ~/.npm-global/bin, ~/bin) are reachable
 #: from non-interactive ssh sessions, where many distros' login shells
 #: leave them off PATH. Without this, `claude`, `opencode`, `agy`, `pipx`-installed
 #: tools, and a lot of npm-global binaries are mysteriously "not found."
 REMOTE_PATH_PREFIX = "$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/bin"
+
+#: In-memory cache of detected remote host OS types ('windows' or 'posix').
+_HOST_OS_CACHE: dict[str, str] = {}
+
+
+def clear_host_os_cache() -> None:
+    """Clear cached OS detection results."""
+    _HOST_OS_CACHE.clear()
+
+
+def set_host_os(host: str, os_type: str) -> None:
+    """Explicitly record the OS type for a host."""
+    _HOST_OS_CACHE[host] = os_type
+
+
+def get_cached_host_os(host: str) -> str | None:
+    """Return the cached OS type for a host if known."""
+    return _HOST_OS_CACHE.get(host)
+
+
+def ssh_raw_run(
+    host: str,
+    raw_command: str,
+    *,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    """
+    Run an unwrapped command directly over ssh without any shell wrapping.
+    Used for OS detection probes before shell wrapping is chosen.
+    """
+    argv = ["ssh", "-o", "BatchMode=yes", host, raw_command]
+    env = {**os.environ, "MSYS_NO_PATHCONV": "1", "MSYS2_ARG_CONV_EXCL": "*"}
+    run_kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "env": env,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.run(argv, **run_kwargs)
+
+
+def detect_remote_os(host: str, *, os_override: str | None = None) -> str:
+    """
+    Detect whether the remote host runs Windows (native cmd.exe/PowerShell)
+    or POSIX (Linux/macOS/BSD).
+
+    Checks in order:
+      1. Explicit os_override argument if not 'auto' or None
+      2. In-memory cache (_HOST_OS_CACHE)
+      3. REMOTE_AGENT_OS environment variable ('windows' or 'posix')
+      4. Probe via unwrapped ssh running `ver`
+    """
+    if os_override and os_override != "auto":
+        _HOST_OS_CACHE[host] = os_override
+        return os_override
+
+    if host in _HOST_OS_CACHE:
+        return _HOST_OS_CACHE[host]
+
+    env_os = os.environ.get("REMOTE_AGENT_OS")
+    if env_os in ("windows", "posix"):
+        _HOST_OS_CACHE[host] = env_os
+        return env_os
+
+    # Run unwrapped OS probe over ssh.
+    # Probe 1: Check login shell for POSIX (Linux, macOS, BSD, WSL).
+    # Running `uname -s` directly under the login shell ensures WSL
+    # (which reports 'Linux') is affirmatively identified as POSIX without
+    # launching cmd.exe or triggering Windows interop.
+    result = ssh_raw_run(host, "uname -s", timeout=15)
+    if result.returncode == 255:
+        raise RuntimeError(
+            f"SSH connection failed while detecting OS on {host}: "
+            f"exit 255\nstderr: {result.stderr.strip()}"
+        )
+    stdout_posix = result.stdout.strip().lower()
+    if result.returncode == 0 and stdout_posix in (
+        "linux",
+        "darwin",
+        "freebsd",
+        "openbsd",
+        "netbsd",
+        "sunos",
+        "aix",
+    ):
+        _HOST_OS_CACHE[host] = "posix"
+        return "posix"
+
+    # Probe 2: If not affirmative POSIX, probe for Windows.
+    # Uses PowerShell to detect Windows independently of cmd.exe built-ins,
+    # working under both cmd.exe and PowerShell OpenSSH DefaultShell.
+    # We encode the command to UTF-16LE Base64 (-EncodedCommand) so it
+    # contains no quotes, spaces, or $ signs, preventing outer-shell variable
+    # expansion under a PowerShell OpenSSH DefaultShell.
+    powershell_detection_script = "$env:OS"
+    encoded_detection_script = base64.b64encode(
+        powershell_detection_script.encode("utf-16-le")
+    ).decode("ascii")
+    win_result = ssh_raw_run(
+        host,
+        f"powershell -NoProfile -EncodedCommand {encoded_detection_script}",
+        timeout=15,
+    )
+    if win_result.returncode == 255:
+        raise RuntimeError(
+            f"SSH connection failed while detecting OS on {host}: "
+            f"exit 255\nstderr: {win_result.stderr.strip()}"
+        )
+    win_stdout = win_result.stdout.strip().lower()
+    if win_result.returncode == 0 and "windows" in win_stdout:
+        _HOST_OS_CACHE[host] = "windows"
+        return "windows"
+
+    # Probe 3 (fallback): Check `ver` for cmd-only environments without PowerShell.
+    ver_result = ssh_raw_run(host, "ver", timeout=15)
+    if ver_result.returncode == 255:
+        raise RuntimeError(
+            f"SSH connection failed while detecting OS on {host}: "
+            f"exit 255\nstderr: {ver_result.stderr.strip()}"
+        )
+    ver_stdout = ver_result.stdout.strip().lower()
+    if ver_result.returncode == 0 and "windows" in ver_stdout:
+        _HOST_OS_CACHE[host] = "windows"
+        return "windows"
+
+    # Neither affirmative POSIX nor affirmative Windows: do not cache.
+    err_detail = (
+        f"uname exit={result.returncode} stdout={result.stdout.strip()!r}; "
+        f"win probe exit={win_result.returncode} stdout={win_result.stdout.strip()!r}; "
+        f"ver probe exit={ver_result.returncode} stdout={ver_result.stdout.strip()!r}"
+    )
+    raise RuntimeError(
+        f"Could not determine remote OS on {host}: inconclusive probe results ({err_detail})"
+    )
 
 
 def rpath(p: str) -> str:
@@ -157,10 +303,15 @@ def rpath(p: str) -> str:
     return p
 
 
-def qrp(p: str) -> str:
-    """Shorthand: quote a remote path for embedding in a shell command,
-    after applying the MSYS-safe path mangling. Always use this instead of
-    bare shlex.quote() for remote filesystem paths."""
+def qrp(p: str, *, os_type: str = "posix") -> str:
+    """
+    Quote a remote path for embedding in a shell command.
+    On POSIX, applies MSYS-safe path mangling and shlex.quote.
+    On Windows, wraps in double quotes for cmd.exe.
+    """
+    if os_type == "windows":
+        escaped = p.replace('"', '\\"')
+        return f'"{escaped}"'
     return shlex.quote(rpath(p))
 
 
@@ -207,19 +358,30 @@ def ssh_run(
     *,
     input_text: str | None = None,
     timeout: float | None = None,
+    os_type: str | None = None,
 ) -> subprocess.CompletedProcess:
     """
     Run a single command on the remote host via ssh.
 
-    Uses `bash -lc` so the remote PATH picks up login-shell additions
-    (/opt/cuda/bin, conda, etc.) - crucial for anything touching GPU
-    build toolchains or language runtimes installed in user home.
-    Also injects REMOTE_PATH_PREFIX so user-local install dirs are
-    reachable.
+    For POSIX remotes:
+      Uses `bash -lc` so the remote PATH picks up login-shell additions
+      (/opt/cuda/bin, conda, etc.) and injects REMOTE_PATH_PREFIX so
+      user-local install dirs are reachable.
+
+    For Windows remotes:
+      Runs directly through the native shell (cmd.exe) without bash wrapping,
+      preventing accidental redirection into WSL.
     """
-    # Prepend user-local install dirs, then run inside login shell.
-    extended = f'export PATH="{REMOTE_PATH_PREFIX}:$PATH"; {remote_command}'
-    wrapped = f"bash -lc {shlex.quote(extended)}"
+    if os_type is None:
+        os_type = detect_remote_os(host)
+
+    if os_type == "windows":
+        wrapped = remote_command
+    else:
+        # Prepend user-local install dirs, then run inside login shell.
+        extended = f'export PATH="{REMOTE_PATH_PREFIX}:$PATH"; {remote_command}'
+        wrapped = f"bash -lc {shlex.quote(extended)}"
+
     argv = ["ssh", "-o", "BatchMode=yes", host, wrapped]
 
     # On Windows + Git Bash / MSYS, ssh.exe's argv is preprocessed to
@@ -255,19 +417,44 @@ def ssh_run(
     return subprocess.run(argv, **run_kwargs)
 
 
-def ssh_put_file(host: str, remote_path: str, content: str) -> None:
+def ssh_put_file(
+    host: str,
+    remote_path: str,
+    content: str,
+    *,
+    os_type: str | None = None,
+) -> None:
     """
     Write `content` to `remote_path` on the remote host.
 
-    Uses stdin-redirect pattern (not scp) - scp is often denied by sandboxes
-    and stdin-redirect avoids heredoc quoting entirely since the content
-    never touches a shell.
+    On POSIX remotes, uses stdin redirection with `cat >`.
+    On Windows remotes, streams base64 payload over stdin to PowerShell to avoid
+    command-line length limits, create parent directories, and write bytes.
     """
-    # Use `cat > path` with the content piped in. No heredoc, no quoting of
-    # content. mkdir -p the parent dir first in the same call.
-    parent = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {qrp(parent)} && cat > {qrp(remote_path)}"
-    result = ssh_run(host, cmd, input_text=content)
+    if os_type is None:
+        os_type = detect_remote_os(host)
+
+    if os_type == "windows":
+        b64_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        escaped_path = remote_path.replace("'", "''")
+        ps_script = (
+            f"$path = [System.IO.Path]::GetFullPath('{escaped_path}'); "
+            "$parent = [System.IO.Path]::GetDirectoryName($path); "
+            "if ($parent -and -not (Test-Path $parent)) { "
+            "New-Item -ItemType Directory -Path $parent -Force | Out-Null "
+            "}; "
+            "$raw = [Console]::In.ReadToEnd(); "
+            "if (-not $raw) { $raw = ($input | Out-String) }; "
+            "[System.IO.File]::WriteAllBytes($path, [System.Convert]::FromBase64String($raw.Trim()))"
+        )
+        encoded_script = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+        cmd = f"powershell -NoProfile -EncodedCommand {encoded_script}"
+        result = ssh_run(host, cmd, input_text=b64_content, os_type=os_type)
+    else:
+        parent = posixpath.dirname(remote_path)
+        cmd = f"mkdir -p {qrp(parent, os_type=os_type)} && cat > {qrp(remote_path, os_type=os_type)}"
+        result = ssh_run(host, cmd, input_text=content, os_type=os_type)
+
     if result.returncode != 0:
         raise RuntimeError(
             f"Failed to write {remote_path} on {host}: "
@@ -275,9 +462,15 @@ def ssh_put_file(host: str, remote_path: str, content: str) -> None:
         )
 
 
-def ssh_check(host: str, remote_command: str, *, error_context: str = "") -> str:
+def ssh_check(
+    host: str,
+    remote_command: str,
+    *,
+    error_context: str = "",
+    os_type: str | None = None,
+) -> str:
     """Run a command, raise if it fails, return stdout."""
-    result = ssh_run(host, remote_command)
+    result = ssh_run(host, remote_command, os_type=os_type)
     if result.returncode != 0:
         ctx = f" ({error_context})" if error_context else ""
         raise RuntimeError(
@@ -293,29 +486,53 @@ def ssh_check(host: str, remote_command: str, *, error_context: str = "") -> str
 # --------------------------------------------------------------------------
 
 
-def compute_worktree_path(repo_path: str, branch: str) -> str:
+def compute_worktree_path(
+    repo_path: str,
+    branch: str,
+    *,
+    os_type: str = "posix",
+) -> str:
     """
     Worktrees live SIBLING to the repo, not inside it, under an
     `agent-remote-worktrees/` directory. Branch-name is used as the
     directory name, with slashes replaced.
     """
-    parent = os.path.dirname(repo_path.rstrip("/"))
     safe_branch = branch.replace("/", "_")
+    if os_type == "windows":
+        safe_branch = safe_branch.replace("\\", "_")
+        if "\\" in repo_path and "/" not in repo_path:
+            parent = ntpath.dirname(repo_path.rstrip("\\"))
+            return f"{parent}\\agent-remote-worktrees\\{safe_branch}"
+        cleaned = repo_path.replace("\\", "/").rstrip("/")
+        parent = posixpath.dirname(cleaned)
+        return f"{parent}/agent-remote-worktrees/{safe_branch}"
+
+    parent = posixpath.dirname(repo_path.rstrip("/"))
     return f"{parent}/agent-remote-worktrees/{safe_branch}"
 
 
-def ensure_worktree(host: str, repo_path: str, branch: str) -> tuple[str, str]:
+def ensure_worktree(
+    host: str,
+    repo_path: str,
+    branch: str,
+    *,
+    os_type: str | None = None,
+) -> tuple[str, str]:
     """
     Create or reuse a git worktree for `branch` on the remote.
     Returns (worktree_path, parent_commit_sha).
     """
-    worktree_path = compute_worktree_path(repo_path, branch)
+    if os_type is None:
+        os_type = detect_remote_os(host)
 
-    # Check if the worktree already exists for this branch
+    worktree_path = compute_worktree_path(repo_path, branch, os_type=os_type)
+
+    quoted_repo = qrp(repo_path, os_type=os_type)
     existing = ssh_check(
         host,
-        f"git -C {qrp(repo_path)} worktree list --porcelain",
+        f"git -C {quoted_repo} worktree list --porcelain",
         error_context="list worktrees",
+        os_type=os_type,
     )
     for block in existing.strip().split("\n\n"):
         if f"branch refs/heads/{branch}" in block:
@@ -324,30 +541,46 @@ def ensure_worktree(host: str, repo_path: str, branch: str) -> tuple[str, str]:
                 line for line in block.splitlines() if line.startswith("worktree ")
             )
             worktree_path = wt_line.split(" ", 1)[1]
+            quoted_wt = qrp(worktree_path, os_type=os_type)
             parent = ssh_check(
                 host,
-                f"git -C {qrp(worktree_path)} rev-parse HEAD",
+                f"git -C {quoted_wt} rev-parse HEAD",
+                os_type=os_type,
             ).strip()
             return worktree_path, parent
 
     # Fresh worktree: create from current HEAD of the repo
     parent_commit = ssh_check(
         host,
-        f"git -C {qrp(repo_path)} rev-parse HEAD",
+        f"git -C {quoted_repo} rev-parse HEAD",
         error_context="get parent commit",
+        os_type=os_type,
     ).strip()
+
+    quoted_wt = qrp(worktree_path, os_type=os_type)
+    quoted_branch = f'"{branch}"' if os_type == "windows" else shlex.quote(branch)
+    quoted_parent = (
+        f'"{parent_commit}"' if os_type == "windows" else shlex.quote(parent_commit)
+    )
 
     ssh_check(
         host,
-        f"git -C {qrp(repo_path)} worktree add -b {shlex.quote(branch)} "
-        f"{qrp(worktree_path)} {shlex.quote(parent_commit)}",
+        f"git -C {quoted_repo} worktree add -b {quoted_branch} "
+        f"{quoted_wt} {quoted_parent}",
         error_context="create worktree",
+        os_type=os_type,
     )
 
     return worktree_path, parent_commit
 
 
-def seed_settings(host: str, worktree_path: str, allowlist: list[str]) -> None:
+def seed_settings(
+    host: str,
+    worktree_path: str,
+    allowlist: list[str],
+    *,
+    os_type: str | None = None,
+) -> None:
     """
     Write a narrow .claude/settings.local.json into the worktree.
     This gives the spawned `claude -p` session exactly the permissions
@@ -358,13 +591,82 @@ def seed_settings(host: str, worktree_path: str, allowlist: list[str]) -> None:
             "allow": allowlist,
         }
     }
-    settings_path = f"{worktree_path}/.claude/settings.local.json"
-    ssh_put_file(host, settings_path, json.dumps(settings, indent=2) + "\n")
+    sep = "\\" if (os_type == "windows" and "/" not in worktree_path) else "/"
+    settings_path = f"{worktree_path}{sep}.claude{sep}settings.local.json"
+    ssh_put_file(
+        host,
+        settings_path,
+        json.dumps(settings, indent=2) + "\n",
+        os_type=os_type,
+    )
 
 
 # --------------------------------------------------------------------------
 # The remote agent invocation
 # --------------------------------------------------------------------------
+
+
+def _build_claude_args(permission_mode: str, model: str | None) -> list[str]:
+    return ["claude", "-p", "--permission-mode", permission_mode]
+
+
+def _build_agy_args(permission_mode: str, model: str | None) -> list[str]:
+    args = ["agy", "--print", "PROMPT_PLACEHOLDER"]
+    if permission_mode == "plan":
+        args.extend(["--mode", "plan"])
+    elif permission_mode in ("acceptEdits", "bypassPermissions"):
+        args.extend(["--dangerously-skip-permissions", "--mode", "accept-edits"])
+    if model:
+        args.extend(["--model", model])
+    return args
+
+
+def _build_opencode_args(permission_mode: str, model: str | None) -> list[str]:
+    args = ["opencode", "run"]
+    if permission_mode in ("acceptEdits", "bypassPermissions"):
+        args.append("--auto")
+    if model:
+        args.extend(["--model", model])
+    args.append("PROMPT_PLACEHOLDER")
+    return args
+
+
+def _build_pi_args(permission_mode: str, model: str | None) -> list[str]:
+    args = ["pi", "-p"]
+    if model:
+        args.extend(["--model", model])
+    args.append("PROMPT_PLACEHOLDER")
+    return args
+
+
+def _build_codex_args(permission_mode: str, model: str | None) -> list[str]:
+    args = ["codex", "exec"]
+    if permission_mode in ("acceptEdits", "bypassPermissions"):
+        args.append("--dangerously-bypass-approvals-and-sandbox")
+    if model:
+        args.extend(["--model", model])
+    args.append("PROMPT_PLACEHOLDER")
+    return args
+
+
+_AGENT_ARG_BUILDERS = {
+    "claude": _build_claude_args,
+    "agy": _build_agy_args,
+    "opencode": _build_opencode_args,
+    "pi": _build_pi_args,
+    "codex": _build_codex_args,
+}
+
+
+def build_agent_args(
+    agent: str,
+    permission_mode: str,
+    model: str | None = None,
+) -> list[str]:
+    builder = _AGENT_ARG_BUILDERS.get(agent)
+    if builder is None:
+        raise ValueError(f"Unknown agent: {agent}")
+    return builder(permission_mode, model)
 
 
 def run_remote_agent(
@@ -375,90 +677,104 @@ def run_remote_agent(
     timeout: float,
     agent: str,
     model: str | None = None,
+    *,
+    os_type: str | None = None,
 ) -> tuple[int, str, str]:
     """
     Invoke the selected agent CLI on the remote in the worktree directory.
     Returns (exit_code, stdout, stderr).
     """
-    prompt_file = f"{worktree_path}/.agent-prompt.txt"
-    ssh_put_file(host, prompt_file, prompt)
+    if os_type is None:
+        os_type = detect_remote_os(host)
 
-    if agent == "claude":
-        remote_cmd = (
-            f"cd {qrp(worktree_path)} && "
-            f"claude -p --permission-mode {shlex.quote(permission_mode)} "
-            f"< {qrp(prompt_file)}"
-        )
-    elif agent == "agy":
-        args_list = ["agy", "--print", "PROMPT_PLACEHOLDER"]
-        if permission_mode == "plan":
-            args_list.extend(["--mode", "plan"])
-        elif permission_mode in ("acceptEdits", "bypassPermissions"):
-            args_list.append("--dangerously-skip-permissions")
-            args_list.extend(["--mode", "accept-edits"])
-        if model:
-            args_list.extend(["--model", model])
+    sep = "\\" if (os_type == "windows" and "/" not in worktree_path) else "/"
+    prompt_file = f"{worktree_path}{sep}.agent-prompt.txt"
+    ssh_put_file(host, prompt_file, prompt, os_type=os_type)
 
+    quoted_wt = qrp(worktree_path, os_type=os_type)
+    quoted_prompt = qrp(prompt_file, os_type=os_type)
+
+    args_list = build_agent_args(agent, permission_mode, model)
+
+    if os_type == "windows":
         args_json = json.dumps(args_list)
-        py_cmd = (
-            "import json, subprocess; "
-            f"args = json.loads({args_json!r}); "
-            f"args[args.index('PROMPT_PLACEHOLDER')] = open({prompt_file!r}).read(); "
-            "subprocess.run(args)"
+        if agent == "claude":
+            py_cmd = (
+                "import json, os, pathlib, shutil, subprocess, sys\n"
+                f"args = json.loads({args_json!r})\n"
+                "prog = shutil.which(args[0]) or args[0]\n"
+                "is_batch = str(prog).lower().endswith(('.cmd', '.bat'))\n"
+                "if is_batch:\n"
+                "    prog_quoted = '\"' + str(prog) + '\"' if not (str(prog).startswith('\"') and str(prog).endswith('\"')) else str(prog)\n"
+                "    batch_arguments = subprocess.list2cmdline(args[1:])\n"
+                "    batch_command = (prog_quoted + ' ' + batch_arguments).strip()\n"
+                "    command = 'cmd.exe /d /c \"' + batch_command + '\"'\n"
+                f"    with open({prompt_file!r}, 'r', encoding='utf-8') as f:\n"
+                f"        res = subprocess.run(command, stdin=f, cwd={worktree_path!r}, shell=False)\n"
+                "else:\n"
+                "    args[0] = prog\n"
+                f"    with open({prompt_file!r}, 'r', encoding='utf-8') as f:\n"
+                f"        res = subprocess.run(args, stdin=f, cwd={worktree_path!r}, shell=False)\n"
+                "sys.exit(res.returncode)\n"
+            )
+        else:
+            py_cmd = (
+                "import json, os, pathlib, shutil, subprocess, sys\n"
+                f"args = json.loads({args_json!r})\n"
+                "prog = shutil.which(args[0]) or args[0]\n"
+                "is_batch = str(prog).lower().endswith(('.cmd', '.bat'))\n"
+                "if is_batch:\n"
+                "    if 'PROMPT_PLACEHOLDER' in args:\n"
+                "        args.remove('PROMPT_PLACEHOLDER')\n"
+                "    prog_quoted = '\"' + str(prog) + '\"' if not (str(prog).startswith('\"') and str(prog).endswith('\"')) else str(prog)\n"
+                "    batch_arguments = subprocess.list2cmdline(args[1:])\n"
+                "    batch_command = (prog_quoted + ' ' + batch_arguments).strip()\n"
+                "    command = 'cmd.exe /d /c \"' + batch_command + '\"'\n"
+                f"    with open({prompt_file!r}, 'r', encoding='utf-8') as f:\n"
+                f"        res = subprocess.run(command, stdin=f, cwd={worktree_path!r}, shell=False)\n"
+                "else:\n"
+                "    args[0] = prog\n"
+                "    if 'PROMPT_PLACEHOLDER' in args:\n"
+                f"        args[args.index('PROMPT_PLACEHOLDER')] = pathlib.Path({prompt_file!r}).read_text(encoding='utf-8')\n"
+                f"    res = subprocess.run(args, cwd={worktree_path!r}, shell=False)\n"
+                "sys.exit(res.returncode)\n"
+            )
+        b64_code = base64.b64encode(py_cmd.encode("utf-8")).decode("ascii")
+        py_bootstrap = (
+            f"import base64; exec(base64.b64decode('{b64_code}').decode('utf-8'))"
         )
-        remote_cmd = f"cd {qrp(worktree_path)} && python3 -c {shlex.quote(py_cmd)}"
-    elif agent == "opencode":
-        opencode_args = ["opencode", "run"]
-        if permission_mode in ("acceptEdits", "bypassPermissions"):
-            opencode_args.append("--auto")
-        if model:
-            opencode_args.extend(["--model", model])
-
-        args_json = json.dumps([*opencode_args, "PROMPT_PLACEHOLDER"])
-        py_cmd = (
-            "import json, subprocess; "
-            f"args = json.loads({args_json!r}); "
-            f"args[args.index('PROMPT_PLACEHOLDER')] = open({prompt_file!r}).read(); "
-            "subprocess.run(args)"
-        )
-        remote_cmd = f"cd {qrp(worktree_path)} && python3 -c {shlex.quote(py_cmd)}"
-    elif agent == "pi":
-        pi_args = ["pi", "-p"]
-        if model:
-            pi_args.extend(["--model", model])
-
-        args_json = json.dumps([*pi_args, "PROMPT_PLACEHOLDER"])
-        py_cmd = (
-            "import json, subprocess; "
-            f"args = json.loads({args_json!r}); "
-            f"args[args.index('PROMPT_PLACEHOLDER')] = open({prompt_file!r}).read(); "
-            "subprocess.run(args)"
-        )
-        remote_cmd = f"cd {qrp(worktree_path)} && python3 -c {shlex.quote(py_cmd)}"
-    elif agent == "codex":
-        codex_args = ["codex", "exec"]
-        if permission_mode in ("acceptEdits", "bypassPermissions"):
-            codex_args.append("--dangerously-bypass-approvals-and-sandbox")
-        if model:
-            codex_args.extend(["--model", model])
-
-        args_json = json.dumps([*codex_args, "PROMPT_PLACEHOLDER"])
-        py_cmd = (
-            "import json, subprocess; "
-            f"args = json.loads({args_json!r}); "
-            f"args[args.index('PROMPT_PLACEHOLDER')] = open({prompt_file!r}).read(); "
-            "subprocess.run(args)"
-        )
-        remote_cmd = f"cd {qrp(worktree_path)} && python3 -c {shlex.quote(py_cmd)}"
+        remote_cmd = f'python -c "{py_bootstrap}"'
     else:
-        raise ValueError(f"Unknown agent: {agent}")
+        if agent == "claude":
+            remote_cmd = (
+                f"cd {quoted_wt} && "
+                f"claude -p --permission-mode {shlex.quote(permission_mode)} "
+                f"< {quoted_prompt}"
+            )
+        else:
+            args_json = json.dumps(args_list)
+            py_cmd = (
+                "import json, pathlib, subprocess, sys; "
+                f"args = json.loads({args_json!r}); "
+                f"args[args.index('PROMPT_PLACEHOLDER')] = pathlib.Path({prompt_file!r}).read_text(encoding='utf-8'); "
+                "sys.exit(subprocess.run(args).returncode)"
+            )
+            remote_cmd = f"cd {quoted_wt} && python3 -c {shlex.quote(py_cmd)}"
 
-    result = ssh_run(host, remote_cmd, timeout=timeout)
+    result = ssh_run(host, remote_cmd, timeout=timeout, os_type=os_type)
     stderr = result.stderr
 
     # Cleanup remains best-effort because the agent result is the primary outcome.
     try:
-        ssh_run(host, f"rm -f {qrp(prompt_file)}")
+        if os_type == "windows":
+            rm_cmd = (
+                'python -c "import os, sys; '
+                'os.path.exists(sys.argv[1]) and os.remove(sys.argv[1])" '
+                f"{quoted_prompt}"
+            )
+        else:
+            rm_cmd = f"rm -f {quoted_prompt}"
+        ssh_run(host, rm_cmd, os_type=os_type)
     except (OSError, subprocess.SubprocessError) as exception:
         cleanup_warning = f"warning: could not remove remote prompt file: {exception}"
         stderr = "\n".join(part for part in (stderr, cleanup_warning) if part)
@@ -479,25 +795,48 @@ def collect_result(
     agent_exit_code: int,
     agent_stdout: str,
     agent_stderr: str,
+    *,
+    os_type: str | None = None,
 ) -> RunResult:
     """
     After the agent exits, figure out what changed in the worktree and
     build a RunResult.
     """
-    # New commit (if agent committed something)
+    if os_type is None:
+        os_type = detect_remote_os(host)
+
+    quoted_wt = qrp(worktree_path, os_type=os_type)
+    quoted_parent = (
+        f'"{parent_commit}"' if os_type == "windows" else shlex.quote(parent_commit)
+    )
+
     new_commit_raw = ssh_check(
         host,
-        f"git -C {qrp(worktree_path)} rev-parse HEAD",
+        f"git -C {quoted_wt} rev-parse HEAD",
+        os_type=os_type,
     ).strip()
     new_commit: str | None = new_commit_raw if new_commit_raw != parent_commit else None
 
     # Files changed: diff against parent commit (includes committed changes)
     # plus any uncommitted changes (staged + unstaged + untracked).
-    diff_cmd = (
-        f"git -C {qrp(worktree_path)} diff --name-only {shlex.quote(parent_commit)} && "
-        f"git -C {qrp(worktree_path)} ls-files --others --exclude-standard"
-    )
-    diff_out = ssh_run(host, diff_cmd).stdout
+    if os_type == "windows":
+        diff_out1 = ssh_run(
+            host,
+            f"git -C {quoted_wt} diff --name-only {quoted_parent}",
+            os_type=os_type,
+        ).stdout
+        diff_out2 = ssh_run(
+            host,
+            f"git -C {quoted_wt} ls-files --others --exclude-standard",
+            os_type=os_type,
+        ).stdout
+        diff_out = f"{diff_out1}\n{diff_out2}"
+    else:
+        diff_cmd = (
+            f"git -C {quoted_wt} diff --name-only {quoted_parent} && "
+            f"git -C {quoted_wt} ls-files --others --exclude-standard"
+        )
+        diff_out = ssh_run(host, diff_cmd, os_type=os_type).stdout
     files_changed = sorted(
         {line.strip() for line in diff_out.splitlines() if line.strip()}
     )
@@ -553,10 +892,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     timeout = float(timeout_str)
 
     try:
+        os_type = getattr(args, "os", "auto")
+        if os_type == "auto":
+            os_type = detect_remote_os(args.host)
+        else:
+            set_host_os(args.host, os_type)
+
         worktree_path, parent_commit = ensure_worktree(
             args.host,
             args.repo_path,
             branch,
+            os_type=os_type,
         )
 
         # Resolve agent
@@ -583,7 +929,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             allowlist = list(DEFAULT_REMOTE_ALLOWLIST)
             if args.extra_allow:
                 allowlist.extend(args.extra_allow)
-            seed_settings(args.host, worktree_path, allowlist)
+            seed_settings(args.host, worktree_path, allowlist, os_type=os_type)
 
         exit_code, stdout, stderr = run_remote_agent(
             host=args.host,
@@ -593,6 +939,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             timeout=timeout,
             agent=agent,
             model=args.model,
+            os_type=os_type,
         )
 
         result = collect_result(
@@ -603,6 +950,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             exit_code,
             stdout,
             stderr,
+            os_type=os_type,
         )
         print(result.to_json())
         return 0 if result.success else 1
@@ -652,14 +1000,43 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         )
         return 2
     args.repo_path = unmangle_msys_path(args.repo_path)
+
     try:
-        worktree_path = compute_worktree_path(args.repo_path, args.branch)
-        ssh_check(
-            args.host,
-            f"git -C {qrp(args.repo_path)} worktree remove --force {qrp(worktree_path)} && "
-            f"git -C {qrp(args.repo_path)} branch -D {shlex.quote(args.branch)}",
-            error_context="remove worktree and branch",
+        os_type = getattr(args, "os", "auto")
+        if os_type == "auto":
+            os_type = detect_remote_os(args.host)
+        else:
+            set_host_os(args.host, os_type)
+
+        worktree_path = compute_worktree_path(
+            args.repo_path, args.branch, os_type=os_type
         )
+        quoted_repo = qrp(args.repo_path, os_type=os_type)
+        quoted_wt = qrp(worktree_path, os_type=os_type)
+        quoted_branch = (
+            f'"{args.branch}"' if os_type == "windows" else shlex.quote(args.branch)
+        )
+        if os_type == "windows":
+            ssh_check(
+                args.host,
+                f"git -C {quoted_repo} worktree remove --force {quoted_wt}",
+                error_context="remove worktree",
+                os_type=os_type,
+            )
+            ssh_check(
+                args.host,
+                f"git -C {quoted_repo} branch -D {quoted_branch}",
+                error_context="remove branch",
+                os_type=os_type,
+            )
+        else:
+            ssh_check(
+                args.host,
+                f"git -C {quoted_repo} worktree remove --force {quoted_wt} && "
+                f"git -C {quoted_repo} branch -D {quoted_branch}",
+                error_context="remove worktree and branch",
+                os_type=os_type,
+            )
         print(
             json.dumps(
                 {
@@ -687,32 +1064,92 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         return 1
 
 
+def build_probe_command(repo_path: str, os_type: str) -> str:
+    """Build OS-appropriate probe command."""
+    if os_type == "windows":
+        escaped_repo = repo_path.replace("'", "''")
+        ps_script = (
+            "$ErrorActionPreference = 'SilentlyContinue'; "
+            f"$repoPath = '{escaped_repo}'; "
+            "$gitVer = (git --version 2>$null | Out-String).Trim(); "
+            "$claudeVer = (claude --version 2>$null | Out-String).Trim(); "
+            "$agyVer = (agy --version 2>$null | Out-String).Trim(); "
+            "$opencodeVer = (opencode --version 2>$null | Out-String).Trim(); "
+            "$piVer = (pi --version 2>$null | Out-String).Trim(); "
+            "$codexVer = (codex --version 2>$null | Out-String).Trim(); "
+            "$pyVer = (python --version 2>$null | Out-String).Trim(); "
+            "if (-not $pyVer) { $pyVer = (python3 --version 2>$null | Out-String).Trim() }; "
+            "if (-not $pyVer) { $pyVer = (py --version 2>$null | Out-String).Trim() }; "
+            "$repoExists = $false; "
+            "if ($repoPath) { "
+            "$gitDir = Join-Path $repoPath '.git'; "
+            "$repoExists = Test-Path $gitDir "
+            "}; "
+            "$verOut = (cmd /c ver | Out-String).Trim(); "
+            "$procPath = (Get-Process -Id $PID).Path; "
+            "if (-not $procPath) { $procPath = 'powershell.exe' }; "
+            "$confShell = if ($env:COMSPEC) { $env:COMSPEC } else { 'cmd.exe' }; "
+            "$data = [ordered]@{ "
+            "os = 'windows'; "
+            "shell = $procPath; "
+            "configured_shell = $confShell; "
+            "user = if ($env:USERNAME) { $env:USERNAME } else { (whoami 2>$null | Out-String).Trim() }; "
+            "hostname = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { (hostname 2>$null | Out-String).Trim() }; "
+            "uname = $verOut; "
+            "repo_path_exists = $repoExists; "
+            "git = if ($gitVer) { $gitVer } else { 'missing' }; "
+            "claude = if ($claudeVer) { $claudeVer } else { 'missing' }; "
+            "agy = if ($agyVer) { $agyVer } else { 'missing' }; "
+            "opencode = if ($opencodeVer) { $opencodeVer } else { 'missing' }; "
+            "pi = if ($piVer) { $piVer } else { 'missing' }; "
+            "codex = if ($codexVer) { $codexVer } else { 'missing' }; "
+            "python = if ($pyVer) { $pyVer } else { 'missing' }; "
+            "path = if ($env:PATH) { $env:PATH } else { '' } "
+            "}; "
+            "$data | ConvertTo-Json -Compress"
+        )
+        encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
+        return f"powershell -NoProfile -EncodedCommand {encoded}"
+
+    return (
+        "printf '{'; "
+        'printf \'"os":"%s",\' "posix"; '
+        'printf \'"shell":"%s",\' "${BASH:-$0}"; '
+        'printf \'"configured_shell":"%s",\' "${SHELL:-}"; '
+        'printf \'"user":"%s",\' "$(whoami)"; '
+        'printf \'"hostname":"%s",\' "$(hostnamectl --static 2>/dev/null || cat /etc/hostname 2>/dev/null || hostname 2>/dev/null)"; '
+        'printf \'"uname":"%s",\' "$(uname -srm)"; '
+        f"printf '\"repo_path_exists\":%s,' "
+        f'"$(test -d {qrp(repo_path)}/.git && echo true || echo false)"; '
+        'printf \'"git":"%s",\' "$(git --version 2>/dev/null || echo missing)"; '
+        'printf \'"claude":"%s",\' "$(claude --version 2>/dev/null || echo missing)"; '
+        'printf \'"agy":"%s",\' "$(agy --version 2>/dev/null || echo missing)"; '
+        'printf \'"opencode":"%s",\' "$(opencode --version 2>/dev/null || echo missing)"; '
+        'printf \'"pi":"%s",\' "$(pi --version 2>/dev/null || echo missing)"; '
+        'printf \'"codex":"%s",\' "$(codex --version 2>/dev/null || echo missing)"; '
+        'printf \'"python":"%s",\' "$(python3 --version 2>/dev/null || echo missing)"; '
+        'printf \'"path":"%s"\' "$PATH"; '
+        "printf '}\\n'"
+    )
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """
     Sanity-check the remote environment. Prints a JSON object with:
-    user, hostname, uname, repo_path_exists, git, claude, agy, opencode,
-    pi, codex, python, path, plus success and host added after parsing.
+    os, shell, configured_shell, user, hostname, uname, repo_path_exists,
+    git, claude, agy, opencode, pi, codex, python, path, plus success and host.
     """
     args.repo_path = unmangle_msys_path(args.repo_path)
+
     try:
-        probe_cmd = (
-            "printf '{'; "
-            'printf \'"user":"%s",\' "$(whoami)"; '
-            'printf \'"hostname":"%s",\' "$(hostnamectl --static 2>/dev/null || cat /etc/hostname)"; '
-            'printf \'"uname":"%s",\' "$(uname -srm)"; '
-            f"printf '\"repo_path_exists\":%s,' "
-            f'"$(test -d {qrp(args.repo_path)}/.git && echo true || echo false)"; '
-            'printf \'"git":"%s",\' "$(git --version 2>/dev/null || echo missing)"; '
-            'printf \'"claude":"%s",\' "$(claude --version 2>/dev/null || echo missing)"; '
-            'printf \'"agy":"%s",\' "$(agy --version 2>/dev/null || echo missing)"; '
-            'printf \'"opencode":"%s",\' "$(opencode --version 2>/dev/null || echo missing)"; '
-            'printf \'"pi":"%s",\' "$(pi --version 2>/dev/null || echo missing)"; '
-            'printf \'"codex":"%s",\' "$(codex --version 2>/dev/null || echo missing)"; '
-            'printf \'"python":"%s",\' "$(python3 --version 2>/dev/null || echo missing)"; '
-            'printf \'"path":"%s"\' "$PATH"; '
-            "printf '}\\n'"
-        )
-        result = ssh_run(args.host, probe_cmd)
+        os_type = getattr(args, "os", "auto")
+        if os_type == "auto":
+            os_type = detect_remote_os(args.host)
+        else:
+            set_host_os(args.host, os_type)
+
+        probe_cmd = build_probe_command(args.repo_path, os_type)
+        result = ssh_run(args.host, probe_cmd, os_type=os_type)
         if result.returncode != 0:
             print(
                 json.dumps(
@@ -798,6 +1235,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="model/provider to use for the agent session (e.g. ollama/qwen3.5-9b, only for agy/opencode/pi/codex)",
     )
+    p_run.add_argument(
+        "--os",
+        default="auto",
+        choices=["auto", "windows", "posix"],
+        help="remote host operating system (default: auto-detected)",
+    )
     p_run.set_defaults(func=cmd_run)
 
     # cleanup
@@ -808,6 +1251,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_cleanup.add_argument("--host", required=True)
     p_cleanup.add_argument("--branch", required=True)
     p_cleanup.add_argument("--repo-path", required=True)
+    p_cleanup.add_argument(
+        "--os",
+        default="auto",
+        choices=["auto", "windows", "posix"],
+        help="remote host operating system (default: auto-detected)",
+    )
     p_cleanup.set_defaults(func=cmd_cleanup)
 
     # probe
@@ -817,6 +1266,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_probe.add_argument("--host", required=True)
     p_probe.add_argument("--repo-path", required=True)
+    p_probe.add_argument(
+        "--os",
+        default="auto",
+        choices=["auto", "windows", "posix"],
+        help="remote host operating system (default: auto-detected)",
+    )
     p_probe.set_defaults(func=cmd_probe)
 
     return parser

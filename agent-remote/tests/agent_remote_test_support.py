@@ -45,6 +45,7 @@ def run_arguments(**overrides: object) -> argparse.Namespace:
         "agent": "opencode",
         "model": None,
         "extra_allow": [],
+        "os": "posix",
     }
     values.update(overrides)
     return argparse.Namespace(**values)

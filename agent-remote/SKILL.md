@@ -111,7 +111,7 @@ Baseline testing showed that agents who saw this framing in their prompt resiste
 
 ```bash
 # Probe a remote: verify ssh, agents, git, and the repo path are reachable
-python agent-remote.py probe --host user@host --repo-path /path/to/repo
+python agent-remote.py probe --host user@host --repo-path /path/to/repo [--os auto|windows|posix]
 
 # Run a task in a fresh remote worktree, returning structured JSON
 python agent-remote.py run \
@@ -121,11 +121,12 @@ python agent-remote.py run \
   [--branch agent-remote/my-task] \
   [--permission-mode acceptEdits] \
   [--agent opencode] \
-  [--model ollama/qwen3.5-9b]
+  [--model ollama/qwen3.5-9b] \
+  [--os auto|windows|posix] \
   [--extra-allow "Bash(sudo systemctl *)"]
 
 # Clean up a worktree+branch on the remote when you're done
-python agent-remote.py cleanup --host user@host --repo-path /path/to/repo --branch agent-remote/my-task
+python agent-remote.py cleanup --host user@host --repo-path /path/to/repo --branch agent-remote/my-task [--os auto|windows|posix]
 ```
 
 The `run` output is JSON on stdout: `{success, branch, worktree_path, parent_commit, new_commit, files_changed, agent_exit_code, stdout_tail, stderr_tail, cleanup_command}`. Parse it.
@@ -168,6 +169,7 @@ When using `claude` as the remote agent, the wrapper writes a narrow `.claude/se
 | `systemctl --user` without `loginctl enable-linger` | Timer fires only while user has an active session | Document the linger requirement; don't try to escalate |
 | Skipping verification "because the code is obviously correct" | Silent drift, ships unverified code | Embed the framing pattern from "Critical: framing prevents silent drift" above into every prompt |
 | Calling the wrapper without `--branch` and forgetting to clean up | Worktrees pile up on the remote | Capture `cleanup_command` from the JSON result and run it when done |
+| Targeting a Windows host with WSL installed | `bash -lc` executes inside WSL VM rather than on native Windows | Wrapper auto-detects remote OS and runs commands via the native shell on Windows (cmd.exe/PowerShell). Explicit override: `--os windows` |
 | Trusting `new_commit` / `files_changed` when the remote agent uses nested skills | An agent session that invokes nested superpowers skills (`writing-plans`/`executing-plans`) may commit to refs other than the worktree HEAD; the wrapper only sees worktree HEAD changes | Ask the remote prompt to summarize what it committed, OR use `git fetch` to inspect all refs on the branch directly. See "Known limitations" |
 
 ## Example
