@@ -29,6 +29,16 @@ Liveness is opt-in via `acquire --owner-pid`, and defaults to `unknown`. `acquir
 
 ## Decisions
 
+Codex's `CODEX_THREAD_ID` is the first automatic session candidate, ahead of an
+inherited Claude or Pi identity. Codex does not export a supported durable owner
+PID, so automatic liveness remains unknown instead of borrowing `CLAUDE_PID`.
+Explicit `--session` and `--owner-pid` always win; use them for other mixed-harness
+nesting where inherited identity variables could be ambiguous.
+
+The shell guard recognizes plain PowerShell read cmdlets as read-only. Expressions,
+script blocks and writes in the same command stay conservatively classified as
+mutating; this remains a cooperative heuristic rather than a shell security boundary.
+
 - Wait for short work, same-branch changes, maintenance, merges, rebases, and shared mutable state.
 - Use a separate Git worktree for independent long-running edits.
 - Lock the new worktree before editing it.

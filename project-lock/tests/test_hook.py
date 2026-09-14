@@ -53,6 +53,32 @@ def test_foreign_lock_denies_edit(nested_worktree_repo):
     assert "session-b" in result.stderr
 
 
+def test_foreign_lock_allows_plain_powershell_reads_but_not_expressions(nested_worktree_repo):
+    root = nested_worktree_repo["main"]
+    core.acquire(root, reason="busy", duration=timedelta(minutes=5), session="other")
+    hook = load_hook_module()
+    payload = {"session_id": "reader", "cwd": str(root), "tool_name": "Bash"}
+    for command in (
+        "Get-Content -LiteralPath README.md",
+        "get-item README.md",
+        "Get-ChildItem -Name",
+        "Select-String -Pattern test README.md",
+        "Test-Path README.md",
+        "Get-FileHash README.md",
+        "Get-Command git",
+        "Write-Output hello",
+    ):
+        assert hook.evaluate({**payload, "tool_input": {"command": command}})[0] == 0
+    for command in (
+        "Get-Content (Remove-Item README.md)",
+        "Get-Content { Remove-Item README.md }",
+        "Get-Content README.md; Remove-Item README.md",
+        "Get-Content README.md > copied.txt",
+        "Get-Content $(Remove-Item README.md)",
+    ):
+        assert hook.evaluate({**payload, "tool_input": {"command": command}})[0] == 2
+
+
 def test_relative_target_resolves_against_payload_cwd(nested_worktree_repo):
     main = nested_worktree_repo["main"]
     core.acquire(main, reason="busy", duration=timedelta(minutes=5), session="session-b")

@@ -67,6 +67,34 @@ def test_default_owner_pid_reads_recognized_environment_variable(
     assert core.default_owner_pid() == 27044
 
 
+def test_codex_thread_owns_lock_instead_of_inherited_claude_identity(
+    repository: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEX_THREAD_ID", "codex-thread")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-claude")
+    monkeypatch.setenv("CLAUDE_PID", "4242")
+    metadata = core.acquire(repository, reason="Codex session", duration=timedelta(minutes=1))
+    assert metadata["session"] == "codex-thread"
+    assert metadata["owner_pid"] is None
+
+
+def test_explicit_identity_overrides_codex_environment(
+    repository: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEX_THREAD_ID", "codex-thread")
+    metadata = core.acquire(
+        repository,
+        reason="Explicit session",
+        duration=timedelta(minutes=1),
+        session="explicit",
+        owner_pid=9999,
+    )
+    assert metadata["session"] == "explicit"
+    assert metadata["owner_pid"] == 9999
+
+
 @pytest.mark.parametrize("value", ["not-a-number", "0", "-5", ""])
 def test_default_owner_pid_rejects_unusable_values(
     value: str, monkeypatch: pytest.MonkeyPatch

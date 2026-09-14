@@ -44,6 +44,18 @@ DENY = 2
 READ_ONLY_COMMANDS = frozenset(
     {"ls", "cat", "head", "tail", "grep", "rg", "pwd", "echo", "which", "type"}
 )
+POWERSHELL_READ_ONLY_COMMANDS = frozenset(
+    {
+        "get-content",
+        "get-item",
+        "get-childitem",
+        "select-string",
+        "test-path",
+        "get-filehash",
+        "get-command",
+        "write-output",
+    }
+)
 GIT_READ_SUBCOMMANDS = frozenset({"status", "log", "diff", "show", "ls-files", "rev-parse"})
 FIND_MUTATING_FLAGS = frozenset(
     {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
@@ -181,6 +193,8 @@ def segment_is_read_only(segment: str) -> bool:
     if not words:
         return True
     first = words[0]
+    if first.casefold() in POWERSHELL_READ_ONLY_COMMANDS:
+        return not any(character in segment for character in "(){}")
     if first == "git":
         subcommand = next((word for word in words[1:] if not word.startswith("-")), "")
         return subcommand in GIT_READ_SUBCOMMANDS

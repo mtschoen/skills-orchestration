@@ -32,6 +32,7 @@ METADATA_FILE_NAME = "owner.json"
 # explicitly; the first variable present in this tuple wins. Add a harness by
 # extending this tuple, not by changing the derivation logic.
 SESSION_ID_ENVIRONMENT_VARIABLES: tuple[str, ...] = (
+    "CODEX_THREAD_ID",  # Codex; takes precedence over a launching harness's inherited id
     "CLAUDE_CODE_SESSION_ID",  # Claude Code
     "PI_SESSION_ID",  # pi
 )
@@ -361,6 +362,8 @@ def default_owner_pid() -> int | None:
     integer, so a garbled environment falls back to `unknown` liveness rather
     than raising.
     """
+    if os.environ.get("CODEX_THREAD_ID", "").strip():
+        return None
     value = _first_environment_value(OWNER_PID_ENVIRONMENT_VARIABLES)
     if value is None:
         return None
