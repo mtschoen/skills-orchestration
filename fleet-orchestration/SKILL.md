@@ -171,6 +171,18 @@ Any brief that includes a run longer than one tool call (Unity batch suites, ful
 
 **Symptom you missed this**: repeated completion notifications from the same agent whose "result" is a status update, each needing a manual nudge; or a shared test-pool lock held for hours by a run whose log went quiet.
 
+## Verification in lanes (measured 2026-09-15)
+
+Seven repair/salvage lanes made 347 pytest, preflight and aislop calls, every one in the foreground, none in the background; one lane ran the identical 3-minute suite five times in a row only to `grep` a different slice of its output; another ran the whole-package suite 16 times chasing a coverage floor one gap at a time. About half of each lane's wall clock was spent blocked on checks it could have overlapped, and half the checks were re-reads. Every brief that includes tests or gates must therefore say:
+
+- **Background anything over ~30 s against an unchanged snapshot.** `run_in_background` with the output teed to a timestamped file in the lane's scratch dir. While it runs, the lane may read docs, inspect previous logs, or plan next steps, but must NOT edit tested source files or configuration during verification - mutating files mid-run invalidates results and creates mixed-state diagnostics. Never re-run a suite to see more of its output; read the teed file.
+- **Iterate on targeted tests, verify whole once.** While fixing: the failing files or `-k` selections (`-n auto` where the package's config allows it). At the end: ONE whole-suite run with coverage and ONE aislop pass against the final, unchanged source snapshot. Cap fix-and-rerun at three rounds, then report (or commit to an isolated branch if briefed) with remaining failures listed under "Known gaps" in the final report; the orchestrator reviews the result before any commit, push, or PR, and the orchestrator or the crew's iterate takes it from there.
+- **Let CI run the repo-wide pass when configured.** When the target repository has an equivalent CI workflow or preflight runner configured on push, `--changed-from` / `--all` preflights cost 10 to 25 minutes and CI executes them on push anyway; a lane runs one only when the brief says the change touches `ci/` or `tools/` and the orchestrator wants the answer before push. If the target repo lacks equivalent CI push checks (e.g. local-only repos or arbitrary fleet projects without CI), the brief must require local repo-wide verification before the orchestrator integrates.
+- **Split implementer and verifier for big repairs.** The implementer reports (or commits to its isolated branch if briefed) once its targeted tests pass; the orchestrator reviews the diff and dispatches a separate mid-tier verifier lane to run the whole suite, aislop, and gates in one pass in its own worktree on that base. The implementer never blocks on a full run, and the verifier's single pass replaces repeated runs. Nothing merges or pushes without orchestrator review.
+- **Coverage floors are not the lane's job to close blind.** A salvage or repair lane stops at 99% with the uncovered lines listed in its report (for the orchestrator to include under "Known gaps" in the PR body after review) rather than spending an hour writing tests for branches it did not write; closing the gap is a bounded follow-up lane or the crew's iterate.
+
+**Symptom you missed this**: a lane report whose tool count is in the hundreds with the same suite command repeated back to back, or a lane that has been "verifying" for an hour with no progress or report.
+
 ## Pre-flight: check target repos for parallel sessions
 
 Start with a fleet-wide pass, then verify per repo before dispatching.
