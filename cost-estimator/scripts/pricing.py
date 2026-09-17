@@ -15,25 +15,101 @@ from __future__ import annotations
 from datetime import datetime
 
 
-# Per-MTok rates (verified 2026-04 against Anthropic docs; fable row
-# added 2026-07-16, verified against the live pricing page same day).
-# One flat rate per model FAMILY for all time -- no time-windowed
-# pricing and no per-version rows. If prices change, adjust them here.
-# Accept that historical data will drift as prices change--these are
-# relative quantities we're tracking, not an invoice of real money spend.
+# Per-MTok rates. Verified 2026-09-17 against
+# https://platform.claude.com/docs/en/about-claude/pricing
+#
+# Still no time-windowed pricing -- one rate per model for all time, so
+# historical reports drift when a price changes. These are relative
+# quantities, not an invoice.
+#
+# But the "one flat rate per FAMILY" rule had to go: Claude Sonnet 5
+# bills at $2/$10 while Sonnet 4.6 bills at $3/$15, so a family-flat
+# sonnet row overcharged every Sonnet 5 token by 50%. (The $3/$15 row
+# encoded a Sept 1 2026 increase that was announced and then cancelled.)
+# MODEL_PRICES holds per-version rows; PRICES stays as the fallback for
+# an unrecognized version within a known family.
+MODEL_PRICES = {
+    "claude-fable-5-1": (10.0, 50.0),
+    "claude-mythos-5-1": (10.0, 50.0),
+    "claude-fable-5": (10.0, 50.0),
+    "claude-mythos-5": (10.0, 50.0),
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-opus-4-5": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-4-5": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
 PRICES = {
     "fable": (10.0, 50.0),
     "opus": (5.0, 25.0),
     "sonnet": (3.0, 15.0),
     "haiku": (1.0, 5.0),
 }
-CACHE_WRITE_MULTIPLIER = 1.25
+
+# Cache-write multipliers, relative to base input rate. Per the docs, a
+# 5-minute write bills at 1.25x and a 1-HOUR write at 2.0x.
+#
+# RESOLVED 2026-09-17. The long-standing 1.25x-for-both override was
+# measured in 2026-04 and has since gone stale. Solving for the implied
+# multiplier against `costUSD` in ~/.claude.json's lastModelUsage, over
+# 40 project/model records, splits perfectly by generation:
+#   exactly 1.250 -> claude-opus-4-7, claude-sonnet-4-6   (16/16 records)
+#   exactly 2.000 -> claude-opus-5, claude-opus-4-8,
+#                    claude-sonnet-5, claude-fable-5,
+#                    claude-fable-5-1                     (20/20 records)
+# i.e. the 2026-04 finding was true for the models of its day, and every
+# current model bills 1h writes at the documented 2.0x.
+#
+# Rather than pin a per-model constant, price from the actual TTL split:
+# transcripts carry usage.cache_creation.ephemeral_{5m,1h}_input_tokens
+# per turn. CACHE_WRITE_MULTIPLIER remains the fallback for turns (and
+# older transcripts) that report only a lump cache_creation_input_tokens.
+CACHE_WRITE_MULTIPLIER_5M = 1.25
+CACHE_WRITE_MULTIPLIER_1H = 2.0
+CACHE_WRITE_MULTIPLIER = 2.0
+
 CACHE_READ_MULTIPLIER = 0.10
+# Fable 5.1 / Mythos 5.1 read cache at 0.025x base input, not 0.1x --
+# a 4x difference on the dominant token class in long cached sessions.
+CACHE_READ_MULTIPLIER_OVERRIDES = {
+    "claude-fable-5-1": 0.025,
+    "claude-mythos-5-1": 0.025,
+}
 
 
 def rates_for(family):
-    """Per-MTok (input, output) rates for a model family."""
+    """Per-MTok (input, output) rates for a model family (fallback)."""
     return PRICES[family]
+
+
+def _normalize(model_identifier):
+    """Strip the Claude Code context-tier suffix, e.g. '...-5[1m]'."""
+    return (model_identifier or "").lower().split("[")[0].strip()
+
+
+def rates_for_model(model_identifier):
+    """Per-MTok (input, output) rates for a specific model id.
+
+    Falls back to the family rate when the exact version isn't listed,
+    so a newly released version still prices instead of silently
+    returning $0.00.
+    """
+    name = _normalize(model_identifier)
+    if name in MODEL_PRICES:
+        return MODEL_PRICES[name]
+    family = model_family(model_identifier)
+    return PRICES[family] if family else None
+
+
+def cache_read_multiplier_for(model_identifier):
+    """Cache-read multiplier for a specific model id."""
+    return CACHE_READ_MULTIPLIER_OVERRIDES.get(
+        _normalize(model_identifier), CACHE_READ_MULTIPLIER
+    )
 
 
 def model_family(model_identifier):
@@ -64,17 +140,38 @@ def parse_timestamp(value):
 
 
 def cost_for_turn(
-    model_identifier, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    model_identifier,
+    input_tokens,
+    output_tokens,
+    cache_read_tokens,
+    cache_write_tokens,
+    cache_write_5m=None,
+    cache_write_1h=None,
 ):
-    family = model_family(model_identifier)
-    if family is None:
+    rates = rates_for_model(model_identifier)
+    if rates is None:
         return 0.0
-    input_rate, output_rate = rates_for(family)
+    input_rate, output_rate = rates
+    cache_read_rate = input_rate * cache_read_multiplier_for(model_identifier)
+    # Price cache writes from the real TTL split when the turn reports it;
+    # fall back to the lump total at the 1h rate otherwise.
+    if cache_write_5m is not None or cache_write_1h is not None:
+        split_5m = cache_write_5m or 0
+        split_1h = cache_write_1h or 0
+        if split_5m + split_1h > 0:
+            cache_write_cost = input_rate * (
+                split_5m * CACHE_WRITE_MULTIPLIER_5M
+                + split_1h * CACHE_WRITE_MULTIPLIER_1H
+            )
+        else:
+            cache_write_cost = cache_write_tokens * input_rate * CACHE_WRITE_MULTIPLIER
+    else:
+        cache_write_cost = cache_write_tokens * input_rate * CACHE_WRITE_MULTIPLIER
     return (
         input_tokens * input_rate
         + output_tokens * output_rate
-        + cache_read_tokens * input_rate * CACHE_READ_MULTIPLIER
-        + cache_write_tokens * input_rate * CACHE_WRITE_MULTIPLIER
+        + cache_read_tokens * cache_read_rate
+        + cache_write_cost
     ) / 1_000_000
 
 
@@ -164,6 +261,11 @@ def iter_assistant_turns(jsonl_path):
             output_tokens = int(usage.get("output_tokens") or 0)
             cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
             cache_write_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+            cache_creation = usage.get("cache_creation") or {}
+            if not isinstance(cache_creation, dict):
+                cache_creation = {}
+            cache_write_5m = int(cache_creation.get("ephemeral_5m_input_tokens") or 0)
+            cache_write_1h = int(cache_creation.get("ephemeral_1h_input_tokens") or 0)
             model_identifier = message.get("model") or ""
 
             tools_seen = []
@@ -184,12 +286,16 @@ def iter_assistant_turns(jsonl_path):
                 "output_tokens": output_tokens,
                 "cache_read_tokens": cache_read_tokens,
                 "cache_write_tokens": cache_write_tokens,
+                "cache_write_5m": cache_write_5m,
+                "cache_write_1h": cache_write_1h,
                 "cost_usd": cost_for_turn(
                     model_identifier,
                     input_tokens,
                     output_tokens,
                     cache_read_tokens,
                     cache_write_tokens,
+                    cache_write_5m,
+                    cache_write_1h,
                 ),
                 "top_tools": tools_seen,
             }

@@ -245,20 +245,56 @@ The analyzer applies these rates per million tokens. This table and
 `scripts/pricing.py` are the source of truth - keep the two in sync
 when rates change.
 
-| Family | Input | Output |
+| Model | Input | Output | Cache read |
+|---|---|---|---|
+| Fable / Mythos 5.1 | $10 | $50 | **0.025x** |
+| Fable / Mythos 5   | $10 | $50 | 0.1x |
+| Opus (4.5 - 5)     | $5  | $25 | 0.1x |
+| Sonnet 5           | **$2**  | **$10** | 0.1x |
+| Sonnet 4.5 / 4.6   | $3  | $15 | 0.1x |
+| Haiku 4.5          | $1  | $5  | 0.1x |
+
+One flat rate per model for all time -- no time-windowed pricing.
+Historical reports drift when a price changes; these are relative
+quantities, not an invoice.
+
+Rates are **per model version**, not per family. That rule changed on
+2026-09-17: Sonnet 5 bills at $2/$10 while Sonnet 4.6 bills at $3/$15,
+so the old family-flat `sonnet` row overcharged every Sonnet 5 token by
+50%. (It encoded a Sept 1 2026 increase that was announced and then
+cancelled.) `pricing.py`'s `MODEL_PRICES` is the source of truth;
+`PRICES` remains a per-family fallback so an unrecognized new version
+still prices instead of silently costing $0.00.
+
+Cache multipliers, relative to base input rate. Cache **read** is
+**0.1x**, except **0.025x on Fable 5.1 / Mythos 5.1** -- a 4x
+difference on the dominant token class in long cached sessions.
+
+Cache **write** is priced from the turn's real TTL split:
+**1.25x** for `ephemeral_5m` tokens, **2.0x** for `ephemeral_1h`,
+read per-turn from `usage.cache_creation`. Turns that report only a
+lump `cache_creation_input_tokens` fall back to 2.0x.
+
+**The old 1.25x-for-both override is retired (resolved 2026-09-17).**
+It was measured in 2026-04 and went stale as models turned over.
+Solving for the implied multiplier against `costUSD` in
+`~/.claude.json`'s `lastModelUsage`, across 40 project/model records,
+splits perfectly by generation:
+
+| Implied multiplier | Models | Records |
 |---|---|---|
-| Fable / Mythos | $10 | $50 |
-| Opus           | $5  | $25 |
-| Sonnet         | $3  | $15 |
-| Haiku          | $1  | $5  |
+| exactly 1.250 | `opus-4-7`, `sonnet-4-6` | 16/16 |
+| exactly 2.000 | `opus-5`, `opus-4-8`, `sonnet-5`, `fable-5`, `fable-5-1` | 20/20 |
 
-One flat rate per model family for all time -- no time-windowed
-pricing and no version-specific rows; model versions within a family
-bill identically.
+So the 2026-04 finding was correct for the models of its day, and every
+current model bills 1h writes at the documented 2.0x. Four `opus-4-6`
+and `sonnet-5` records solved to 3.3-6.5 and remain unexplained --
+likely web-search charges folded into `costUSD`, or a historical base
+rate this table no longer carries. They are a small minority and do not
+affect current-model pricing.
 
-Cache multipliers (relative to base input rate, all models): cache read
-**0.1x**, cache write **1.25x** (empirical for both 5m and 1h TTLs as of
-2026-04, despite docs claiming 2.0x for 1h-TTL writes).
+Re-run that solve (it needs only `~/.claude.json`) after any model
+generation turns over; it is the cheapest available ground truth.
 
 The 1M-context tier (when `model.id` contains `[1m]`) bills at the SAME
 flat per-token rate - no surcharge above 200K (verified 2026-06 against

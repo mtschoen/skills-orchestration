@@ -224,6 +224,15 @@ def process_file(path, parent_session, is_subagent):
                 output_tokens = int(usage.get("output_tokens") or 0)
                 cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
                 cache_write_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+                cache_creation = usage.get("cache_creation") or {}
+                if not isinstance(cache_creation, dict):
+                    cache_creation = {}
+                cache_write_5m = int(
+                    cache_creation.get("ephemeral_5m_input_tokens") or 0
+                )
+                cache_write_1h = int(
+                    cache_creation.get("ephemeral_1h_input_tokens") or 0
+                )
 
                 totals.input_tokens += input_tokens
                 totals.output_tokens += output_tokens
@@ -237,6 +246,8 @@ def process_file(path, parent_session, is_subagent):
                     output_tokens,
                     cache_read_tokens,
                     cache_write_tokens,
+                    cache_write_5m,
+                    cache_write_1h,
                 )
 
                 gap = unpriced_usage(
