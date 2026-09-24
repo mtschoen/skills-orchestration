@@ -121,13 +121,13 @@ class DetectOsTests(unittest.TestCase):
             "ssh_raw_run",
             return_value=completed_process(0, stdout="Linux\n"),
         ) as raw_run:
-            os_type = agent_remote.detect_remote_os("user@llamabox")
+            os_type = agent_remote.detect_remote_os("user@linux-host")
 
         self.assertEqual(os_type, "posix")
         self.assertEqual(raw_run.call_count, 1)
         self.assertEqual(raw_run.call_args.args[1], "uname -s")
         # Second call reads from cache without running ssh_raw_run again
-        self.assertEqual(agent_remote.detect_remote_os("user@llamabox"), "posix")
+        self.assertEqual(agent_remote.detect_remote_os("user@linux-host"), "posix")
         self.assertEqual(raw_run.call_count, 1)
 
     def test_detects_posix_wsl_from_login_shell_without_cmd_exe(self) -> None:
@@ -151,7 +151,7 @@ class DetectOsTests(unittest.TestCase):
                 completed_process(0, stdout="Windows_NT\r\n"),
             ],
         ) as raw_run:
-            os_type = agent_remote.detect_remote_os("mtsch@chonkers")
+            os_type = agent_remote.detect_remote_os("operator@windows-host")
 
         self.assertEqual(os_type, "windows")
         self.assertEqual(raw_run.call_count, 2)
@@ -164,7 +164,9 @@ class DetectOsTests(unittest.TestCase):
         decoded_script = base64.b64decode(base64_payload).decode("utf-16-le")
         self.assertEqual(decoded_script, "$env:OS")
         # Second call reads from cache
-        self.assertEqual(agent_remote.detect_remote_os("mtsch@chonkers"), "windows")
+        self.assertEqual(
+            agent_remote.detect_remote_os("operator@windows-host"), "windows"
+        )
         self.assertEqual(raw_run.call_count, 2)
 
     def test_detects_windows_from_ver_fallback(self) -> None:
@@ -178,7 +180,7 @@ class DetectOsTests(unittest.TestCase):
                 completed_process(0, stdout=ver_output),
             ],
         ) as raw_run:
-            os_type = agent_remote.detect_remote_os("mtsch@cmd-only")
+            os_type = agent_remote.detect_remote_os("operator@cmd-only")
 
         self.assertEqual(os_type, "windows")
         self.assertEqual(raw_run.call_count, 3)

@@ -601,7 +601,7 @@ class ProbeCommandTests(unittest.TestCase):
                 "os": "posix",
                 "shell": "/bin/bash",
                 "user": "worker",
-                "hostname": "llamabox",
+                "hostname": "linux-host",
                 "uname": "Linux 6.18",
                 "repo_path_exists": True,
                 "git": "git version 2.44.0",
@@ -640,8 +640,8 @@ class ProbeCommandTests(unittest.TestCase):
                 "os": "windows",
                 "shell": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
                 "configured_shell": "C:\\WINDOWS\\system32\\cmd.exe",
-                "user": "mtsch",
-                "hostname": "chonkers",
+                "user": "operator",
+                "hostname": "windows-host",
                 "uname": "Microsoft Windows [Version 10.0.26200.8894]",
                 "repo_path_exists": True,
                 "git": "git version 2.44.0.windows.1",
@@ -651,7 +651,7 @@ class ProbeCommandTests(unittest.TestCase):
                 "pi": "missing",
                 "codex": "missing",
                 "python": "Python 3.13.14",
-                "path": "C:\\Windows;C:\\Users\\mtsch\\AppData\\Local\\agy\\bin",
+                "path": "C:\\Windows;C:\\Users\\operator\\AppData\\Local\\agy\\bin",
             }
         )
         output = StringIO()
@@ -665,8 +665,8 @@ class ProbeCommandTests(unittest.TestCase):
         ):
             exit_code = agent_remote.cmd_probe(
                 self.probe_arguments(
-                    host="mtsch@chonkers",
-                    repo_path="C:/Users/mtsch/schoen-lab",
+                    host="operator@windows-host",
+                    repo_path="C:/Users/operator/schoen-lab",
                     os="windows",
                 )
             )
@@ -676,7 +676,7 @@ class ProbeCommandTests(unittest.TestCase):
         self.assertIn("powershell -NoProfile -EncodedCommand", raw_cmd)
         b64_part = raw_cmd.split()[-1]
         decoded_script = base64.b64decode(b64_part).decode("utf-16-le")
-        self.assertIn("C:/Users/mtsch/schoen-lab", decoded_script)
+        self.assertIn("C:/Users/operator/schoen-lab", decoded_script)
         self.assertIn("cmd /c ver", decoded_script)
         self.assertIn("(Get-Process -Id $PID).Path", decoded_script)
         self.assertIn("configured_shell = $confShell", decoded_script)
@@ -688,12 +688,12 @@ class ProbeCommandTests(unittest.TestCase):
             "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
         )
         self.assertEqual(payload["configured_shell"], "C:\\WINDOWS\\system32\\cmd.exe")
-        self.assertEqual(payload["user"], "mtsch")
+        self.assertEqual(payload["user"], "operator")
         self.assertEqual(
             payload["uname"], "Microsoft Windows [Version 10.0.26200.8894]"
         )
         self.assertEqual(payload["success"], True)
-        self.assertEqual(payload["host"], "mtsch@chonkers")
+        self.assertEqual(payload["host"], "operator@windows-host")
 
     def test_probe_command_distinguishes_executing_shell_from_configured_shell(
         self,
