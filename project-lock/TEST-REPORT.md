@@ -1,5 +1,42 @@
-skills-project-lock test report - 2026-08-06T01:10:00Z
-========================================================
+Codex release-hook repair - 2026-10-01 UTC
+=========================================
+
+- Base: orchestration `34c6b2b`, branch `fix/codex-sandbox-release`.
+- Mode: maintain test/coverage gate; record static-scan findings separately.
+- Windows Python 3.13: **181 passed**, 0 failed, 0 skipped in 79.13 seconds.
+- Coverage: **719/719 statements, 210/210 branches, 100%**.
+- Ruff check and format check: passed. Markdownlint: 0 findings.
+  Agent Skills validator 0.1.1: passed.
+- Regression: correct ownership-token releases across sessions; incorrect tokens,
+  alternate scripts/interpreters, shell chaining/substitution, extra options,
+  malformed quoting, missing metadata, and absent locks do not earn the exception.
+- Independent read-only review: no blockers. The CLI's transactional recheck
+  protects replacement locks after a hook authorization snapshot.
+- Native subagent regression: `CODEX_SESSION_ID` matches the hooks' session even
+  when `CODEX_THREAD_ID` names a child. Both Codex identities suppress inherited
+  Claude PID nomination; explicit identity overrides remain available.
+- Installed smoke: captured token released the previously blocked synthetic lock.
+  Actual `codex sandbox -P project-lock` lifecycle passed: Codex identity takes
+  precedence over inherited Claude identity, competing acquire rejected, own edit
+  allowed, foreign edit denied, renew succeeds, release clears marker and registry.
+  Unrelated `.git/config` remained protected.
+- Test environment: do not hold a home-directory lock over the real pytest temp
+  root; existing ancestor-discovery tests intentionally inspect the filesystem and
+  otherwise find that ambient lock. The earlier five failures disappeared after
+  releasing the session's own home lock. No test assertions or gates were weakened.
+- Aislop 0.16.0: one new false positive on the sibling `project_lock` import in
+  `hooks/pre_tool_use.py` (the hook inserts its `scripts` directory into `sys.path`).
+  No suppression added. Existing warnings: repeated `store_true`/`utf-8` literals,
+  a wall-clock assertion in `tests/test_hook.py`, and legacy `telemetry: false`
+  schema. This scan is not clean; its configuration was not changed.
+
+Commands: `python -m pytest -q --tb=short -p no:cacheprovider`,
+`python -m ruff check scripts tests hooks`,
+`python -m ruff format --check scripts tests hooks`,
+`uvx --from skills-ref==0.1.1 agentskills validate ../project-lock`, `aislop scan .`.
+
+Historical report - 2026-08-06T01:10:00Z
+--------------------------------------
 
 Git:      main @ a4760e8 (pre-commit working tree)
 Status:   PASS (Windows local, WSL Ubuntu-24.04, and ubuntu-latest CI)

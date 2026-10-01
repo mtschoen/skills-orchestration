@@ -18,6 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+from project_lock.command_authorization import authorizes_release
+
 # aislop-ignore-next-line ai-slop/hallucinated-import -- sys.path-resolved sibling; stdlib-only
 from project_lock.core import (
     MARKER_DIRECTORY_NAME,
@@ -227,6 +229,9 @@ def check_bash(payload: dict) -> tuple[int, str]:
     command = tool_input.get("command", "")
     session_id = payload.get("session_id", "")
     cwd = payload.get("cwd") or "."
+    script = Path(__file__).resolve().parents[1] / "scripts" / "project-lock.py"
+    if authorizes_release(command, cwd, script):
+        return ALLOW, ""
     governed = governing_lock(cwd)
     if (
         governed is not None

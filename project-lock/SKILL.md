@@ -86,6 +86,16 @@ Release immediately after the last mutation, including on failure or when abando
 python <script> release <path> --lock-id <id>
 ```
 
+The hook accepts this exact simple command even from a different session when
+the token matches the current lock. Use the script belonging to the hook's own
+installation. Run release separately: extra arguments, shell expansions and
+chained commands do not receive this exception. The CLI rechecks ownership inside
+the mutation transaction. A wrong token never authorizes release.
+
+In a Codex workspace sandbox, grant the shared project-lock state directory and
+the repository's Git `info/exclude` file write access; see README's Codex workspace
+sandbox section. Do not switch to a session-private registry to evade a denial.
+
 For sessions touching multiple projects, track each path and lock id separately. Release all of them before wrapping up.
 
 ## Watch and override

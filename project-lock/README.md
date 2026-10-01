@@ -29,8 +29,10 @@ Liveness is opt-in via `acquire --owner-pid`, and defaults to `unknown`. `acquir
 
 ## Decisions
 
-Codex's `CODEX_THREAD_ID` is the first automatic session candidate, ahead of an
-inherited Claude or Pi identity. Codex does not export a supported durable owner
+Codex's `CODEX_SESSION_ID` is the first automatic session candidate, matching the
+session used by its hooks even in native child threads. `CODEX_THREAD_ID` is the
+fallback for runtimes without that session variable, ahead of an inherited Claude
+or Pi identity. Codex does not export a supported durable owner
 PID, so automatic liveness remains unknown instead of borrowing `CLAUDE_PID`.
 Explicit `--session` and `--owner-pid` always win; use them for other mixed-harness
 nesting where inherited identity variables could be ambiguous.
@@ -38,6 +40,29 @@ nesting where inherited identity variables could be ambiguous.
 The shell guard recognizes plain PowerShell read cmdlets as read-only. Expressions,
 script blocks and writes in the same command stay conservatively classified as
 mutating; this remains a cooperative heuristic rather than a shell security boundary.
+
+A simple `python <installed-script> release <path> --lock-id <id>` is allowed
+across session identities when the token matches the current lock. Use the CLI
+from the same installation as the hook. The exception rejects extra arguments,
+shell expansion, redirection, and appended commands. The CLI checks the token
+again inside its SQLite transaction, so a replacement lock remains protected.
+
+### Codex workspace sandbox
+
+The default workspace sandbox also needs write access to the shared project-lock
+state directory and Git's local `info/exclude` file. On Windows, the state directory
+defaults to `%LOCALAPPDATA%/project-lock`; `PROJECT_LOCK_STATE_DIR` can override it.
+Grant the actual shared directory, not a private per-session replacement, so agents
+still coordinate through one registry and transaction database.
+
+Current Codex versions support a named permissions profile extending `:workspace`
+with filesystem grants for the absolute state directory and
+`permissions.<profile>.filesystem.":workspace_roots".".git/info/exclude" = "write"`.
+Linked worktrees may need the actual Git exclude path granted separately.
+Select that profile with `codex sandbox -P <profile>` when testing. Full access is
+another option; automation that explicitly supplies its own sandbox flags can
+override the interactive default. See the
+[Codex permissions reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 - Wait for short work, same-branch changes, maintenance, merges, rebases, and shared mutable state.
 - Use a separate Git worktree for independent long-running edits.
