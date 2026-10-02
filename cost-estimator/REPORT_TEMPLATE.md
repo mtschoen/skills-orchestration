@@ -187,9 +187,11 @@ specific dollar figures and session IDs.
   `<projects>/<slug>/<sessionId>/subagents/agent-*.jsonl` (subagents).
 - Dedupes assistant turns by `message.id` to avoid the snapshot
   double-count gotcha.
-- Prices each turn per the canonical Anthropic rate table (Opus
-  $5/$25, Sonnet $3/$15, Haiku $1/$5; cache read 0.1x, cache write
-  1.25x input rate; the 1M tier bills at the flat rate, no surcharge).
+- Prices each turn per the canonical Anthropic rate table (per-model
+  rows, for example Opus 5.5 $4/$20, Sonnet 5.5 $2/$10, Haiku 4.5 $1/$5;
+  cache read 0.1x input rate except 0.05x Opus 5.5 and 0.025x Fable 5.1;
+  cache write 1.25x for 5m and 2x for 1h; the 1M tier bills at the flat
+  rate, no surcharge).
 - Filters by first-entry timestamp into [start, end+1) UTC.
 - Sums `system/turn_duration.durationMs` for parent active time and reports
   subagent time separately to avoid double-counting concurrent work.

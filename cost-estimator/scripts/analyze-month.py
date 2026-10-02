@@ -4,8 +4,9 @@ This cohesive CLI stays in one file because parsing, aggregation, and CSV output
 
 Walks all session JSONLs (parents + subagents) under one or more
 .claude/projects roots, dedupes assistant turns by message.id, and prices
-each turn per the canonical formula (Opus / Sonnet / Haiku rates, flat
-across the 1M-context tier, cache read 0.1x, cache write 1.25x).
+each turn per the canonical formula (per-model rates, flat across the
+1M-context tier, cache read 0.1x (0.05x Opus 5.5, 0.025x Fable 5.1),
+cache write 1.25x for 5m and 2x for 1h TTL).
 
 Backs the retrospective half of the cost-estimator skill. Answers "what
 did I spend?" and "how much active time did I wait?" with per-session,
@@ -224,6 +225,10 @@ def process_file(path, parent_session, is_subagent):
                 output_tokens = int(usage.get("output_tokens") or 0)
                 cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
                 cache_write_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+                cache_write_1h_tokens = int(
+                    (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens")
+                    or 0
+                )
 
                 totals.input_tokens += input_tokens
                 totals.output_tokens += output_tokens
@@ -237,6 +242,7 @@ def process_file(path, parent_session, is_subagent):
                     output_tokens,
                     cache_read_tokens,
                     cache_write_tokens,
+                    cache_write_1h_tokens,
                 )
 
                 gap = unpriced_usage(

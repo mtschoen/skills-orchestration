@@ -241,24 +241,36 @@ two values rather than asserting one.
 
 ## Pricing table (canonical, inlined)
 
-The analyzer applies these rates per million tokens. This table and
-`scripts/pricing.py` are the source of truth - keep the two in sync
-when rates change.
+The analyzer applies these rates per million tokens (verified 2026-10-02
+against <https://platform.claude.com/docs/en/about-claude/pricing>). This
+table and `scripts/pricing.py` are the source of truth - keep the two in
+sync when rates change.
 
-| Family | Input | Output |
-|---|---|---|
-| Fable / Mythos | $10 | $50 |
-| Opus           | $5  | $25 |
-| Sonnet         | $3  | $15 |
-| Haiku          | $1  | $5  |
+| Model | Input | Output | Cache read |
+|---|---|---|---|
+| Fable 5.1 / Mythos 5.1 | $10 | $50 | 0.025x ($0.25) |
+| Fable 5 / Mythos | $10 | $50 | 0.1x |
+| Opus 5.5 | $4 | $20 | 0.05x ($0.20) |
+| Opus 5, 4.8, 4.7, 4.6, 4.5 | $5 | $25 | 0.1x |
+| Opus 4.1, Opus 4 (retired) | $15 | $75 | 0.1x |
+| Sonnet 5.5, Sonnet 5 | $2 | $10 | 0.1x |
+| Sonnet 4.6, 4.5, 4 | $3 | $15 | 0.1x |
+| Haiku 4.5 | $1 | $5 | 0.1x |
+| Haiku 3.5 (retired) | $0.80 | $4 | 0.1x |
 
-One flat rate per model family for all time -- no time-windowed
-pricing and no version-specific rows; model versions within a family
-bill identically.
+Rates are flat for all time per model row: no time-windowed pricing
+(Sonnet 5's planned 2026-09-01 step to $3/$15 was cancelled). An id
+that names only a family (`opus`, `sonnet`, `haiku`) bills at that
+family's default row, which is the Opus 5 / Sonnet 4.x / Haiku 4.5
+price, not the newest version's.
 
-Cache multipliers (relative to base input rate, all models): cache read
-**0.1x**, cache write **1.25x** (empirical for both 5m and 1h TTLs as of
-2026-04, despite docs claiming 2.0x for 1h-TTL writes).
+Cache write multipliers (relative to base input rate): 5-minute writes
+**1.25x**, 1-hour writes **2x**. The analyzer reads the split from
+`usage.cache_creation.ephemeral_1h_input_tokens` and bills any write
+without a split at 1.25x. Cache read is **0.1x** except where the table
+says otherwise. Fast mode, batch discounts and the data residency
+multiplier are not modeled; the $0.01/web-search charge is not modeled
+either.
 
 The 1M-context tier (when `model.id` contains `[1m]`) bills at the SAME
 flat per-token rate - no surcharge above 200K (verified 2026-06 against

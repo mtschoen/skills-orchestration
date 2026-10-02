@@ -5,30 +5,56 @@ Both analyze-month.py (retrospective bulk analysis) and plot-session.py
 (single-session trajectory) import from here so the formula does not
 drift.
 
-The PRICES table below is the source of truth for these scripts;
-SKILL.md's pricing table mirrors it. Keep the two in sync when rates
-change.
+The PRICES and VERSION_PRICES tables below are the source of truth for
+these scripts; SKILL.md's pricing table mirrors them. Keep the two in
+sync when rates change.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 
-# Per-MTok rates (verified 2026-04 against Anthropic docs; fable row
-# added 2026-07-16, verified against the live pricing page same day).
-# One flat rate per model FAMILY for all time -- no time-windowed
-# pricing and no per-version rows. If prices change, adjust them here.
-# Accept that historical data will drift as prices change--these are
-# relative quantities we're tracking, not an invoice of real money spend.
+# Per-MTok rates, verified 2026-10-02 against the Anthropic pricing page
+# (https://platform.claude.com/docs/en/about-claude/pricing). The family
+# rows below are the default for every version of a family; the rows in
+# VERSION_PRICES override them for versions whose published price
+# differs. Accept that historical data will drift as prices change--these
+# are relative quantities we're tracking, not an invoice of real money
+# spend. Long-context requests (up to 1M tokens) bill at the same
+# per-token rates, so there is no long-context tier.
 PRICES = {
     "fable": (10.0, 50.0),
     "opus": (5.0, 25.0),
     "sonnet": (3.0, 15.0),
     "haiku": (1.0, 5.0),
 }
-CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_WRITE_MULTIPLIER = 1.25  # 5-minute cache write
+CACHE_WRITE_1H_MULTIPLIER = 2.0  # 1-hour cache write
 CACHE_READ_MULTIPLIER = 0.10
+
+# Version-specific rows: (pattern, input, output, cache read multiplier).
+# First match wins. Each row mirrors a published price that differs from
+# the family default above.
+VERSION_PRICES = (
+    # Fable 5.1 and Mythos 5.1: cache reads at 0.025x base input.
+    (re.compile(r"(fable|mythos)-5-1"), 10.0, 50.0, 0.025),
+    # Opus 5.5: $4 / $20, cache reads at 0.05x base input.
+    (re.compile(r"opus-5-5"), 4.0, 20.0, 0.05),
+    # Opus 4 and Opus 4.1 (retired): $15 / $75.
+    (
+        re.compile(r"opus-4(?:-1)?(?:[-@]\d{8})?(?:-v1:0)?(?:\[|$)"),
+        15.0,
+        75.0,
+        CACHE_READ_MULTIPLIER,
+    ),
+    # Sonnet 5 and Sonnet 5.5: $2 / $10 (the planned $3 / $15 step on
+    # 2026-09-01 never happened). "sonnet-5" does not match "sonnet-4-5".
+    (re.compile(r"sonnet-5(?:-|\[|$)"), 2.0, 10.0, CACHE_READ_MULTIPLIER),
+    # Haiku 3.5 (retired): $0.80 / $4.
+    (re.compile(r"haiku-3-5|3-5-haiku"), 0.8, 4.0, CACHE_READ_MULTIPLIER),
+)
 
 
 def rates_for(family):
@@ -44,14 +70,28 @@ def model_family(model_identifier):
         return "fable"
     if "opus" in name:
         return "opus"
-    # Any "sonnet-N" raw model id (sonnet-5, sonnet-4-6, ...) classifies
-    # as the single "sonnet" family -- versions don't get their own
-    # PRICES row, they all bill at the same family rate.
     if "sonnet" in name:
         return "sonnet"
     if "haiku" in name:
         return "haiku"
     return None
+
+
+def price_for_model(model_identifier):
+    """(input, output, cache read multiplier) for a raw model id, or None.
+
+    A matching VERSION_PRICES row wins; otherwise the family default
+    applies. None means the id is not a recognized family.
+    """
+    family = model_family(model_identifier)
+    if family is None:
+        return None
+    name = model_identifier.lower()
+    for pattern, input_rate, output_rate, read_multiplier in VERSION_PRICES:
+        if pattern.search(name):
+            return input_rate, output_rate, read_multiplier
+    input_rate, output_rate = rates_for(family)
+    return input_rate, output_rate, CACHE_READ_MULTIPLIER
 
 
 def parse_timestamp(value):
@@ -64,17 +104,32 @@ def parse_timestamp(value):
 
 
 def cost_for_turn(
-    model_identifier, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    model_identifier,
+    input_tokens,
+    output_tokens,
+    cache_read_tokens,
+    cache_write_tokens,
+    cache_write_1h_tokens=0,
 ):
-    family = model_family(model_identifier)
-    if family is None:
+    """Dollar cost of one turn.
+
+    `cache_write_tokens` is the total cache write volume;
+    `cache_write_1h_tokens` is the portion of it written with the
+    1-hour TTL (usage.cache_creation.ephemeral_1h_input_tokens), billed
+    at 2x base input. The rest bills at the 5-minute 1.25x rate.
+    """
+    price = price_for_model(model_identifier)
+    if price is None:
         return 0.0
-    input_rate, output_rate = rates_for(family)
+    input_rate, output_rate, read_multiplier = price
+    one_hour = min(cache_write_1h_tokens, cache_write_tokens)
+    five_minute = cache_write_tokens - one_hour
     return (
         input_tokens * input_rate
         + output_tokens * output_rate
-        + cache_read_tokens * input_rate * CACHE_READ_MULTIPLIER
-        + cache_write_tokens * input_rate * CACHE_WRITE_MULTIPLIER
+        + cache_read_tokens * input_rate * read_multiplier
+        + five_minute * input_rate * CACHE_WRITE_MULTIPLIER
+        + one_hour * input_rate * CACHE_WRITE_1H_MULTIPLIER
     ) / 1_000_000
 
 
@@ -164,6 +219,10 @@ def iter_assistant_turns(jsonl_path):
             output_tokens = int(usage.get("output_tokens") or 0)
             cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
             cache_write_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+            cache_write_1h_tokens = int(
+                (usage.get("cache_creation") or {}).get("ephemeral_1h_input_tokens")
+                or 0
+            )
             model_identifier = message.get("model") or ""
 
             tools_seen = []
@@ -190,6 +249,7 @@ def iter_assistant_turns(jsonl_path):
                     output_tokens,
                     cache_read_tokens,
                     cache_write_tokens,
+                    cache_write_1h_tokens,
                 ),
                 "top_tools": tools_seen,
             }
