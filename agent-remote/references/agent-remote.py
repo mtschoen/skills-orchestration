@@ -15,7 +15,7 @@ Usage:
         [--branch agent-remote/nvbw-2026-04-07] \
         [--permission-mode acceptEdits] \
         [--agent opencode] \
-        [--model ollama/qwen3.5-9b] \
+        [--model ollama/<model-id>] \
         [--os auto|windows|posix]
 
     agent-remote.py cleanup \
@@ -1233,7 +1233,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         "-m",
         default=None,
-        help="model/provider to use for the agent session (e.g. ollama/qwen3.5-9b, only for agy/opencode/pi/codex)",
+        help="model/provider to use for the agent session (e.g. ollama/<model-id>, only for agy/opencode/pi/codex)",
     )
     p_run.add_argument(
         "--os",

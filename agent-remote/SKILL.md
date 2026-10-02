@@ -121,7 +121,7 @@ python agent-remote.py run \
   [--branch agent-remote/my-task] \
   [--permission-mode acceptEdits] \
   [--agent opencode] \
-  [--model ollama/qwen3.5-9b] \
+  [--model ollama/<model-id>] \
   [--os auto|windows|posix] \
   [--extra-allow "Bash(sudo systemctl *)"]
 
@@ -180,7 +180,7 @@ python agent-remote.py run \
   --repo-path /home/user/myrepo \
   --branch agent-remote/nvbw-2026-04-07 \
   --agent opencode \
-  --model ollama/qwen3.5-9b \
+  --model ollama/<model-id> \
   --prompt "Clone https://github.com/NVIDIA/nvbandwidth into ~/nvbw-build, build it with cmake, run \`./nvbandwidth\` against all available GPUs, parse the host-to-device and device-to-device matrices, and write the result to /tmp/nvbw-result.json. You MUST run this end-to-end on this machine and include the real numeric matrix in your final report. Do not paste hypothetical examples. If the matrix isn't in the report, the task isn't done."
 ```
 
