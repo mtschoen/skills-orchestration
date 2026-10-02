@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -58,6 +60,10 @@ def test_owner_token_allows_release_from_another_session(release_case, outside, 
         "other-operation",
         "other-option",
         "missing-argument",
+        "glob-star",
+        "glob-question",
+        "glob-bracket",
+        "glob-injection",
     ],
 )
 def test_release_exception_does_not_authorize_unproven_commands(release_case, alteration):
@@ -84,7 +90,52 @@ def test_release_exception_does_not_authorize_unproven_commands(release_case, al
         command = command.replace("--lock-id", "--expect-lock-id")
     elif alteration == "missing-argument":
         command = command.replace(metadata["lock_id"], "")
+    elif alteration == "glob-star":
+        command = command.replace(str(root), f"{root}*")
+    elif alteration == "glob-question":
+        command = command.replace(str(root), f"{root}?")
+    elif alteration == "glob-bracket":
+        command = command.replace(str(root), f"{root}[a-z]")
+    elif alteration == "glob-injection":
+        victim = root / "victim"
+        victim.mkdir()
+        victim_metadata = core.acquire(
+            victim, reason="victim", duration=timedelta(minutes=5), session="victim-session"
+        )
+        literal_directory = root / "[a-zA-Z0-9-]*"
+        literal_directory.mkdir()
+        literal_metadata = core.acquire(
+            literal_directory, reason="literal", duration=timedelta(minutes=5), session="old"
+        )
+        (root / "--force").touch()
+        (root / "--reason=reviewed").touch()
+        (root / f"--expect-lock-id={victim_metadata['lock_id']}").touch()
+        script = Path(hook.__file__).parent.parent / "scripts" / "project-lock.py"
+        command = (
+            f'"{sys.executable}" "{script}" release [a-zA-Z0-9-]* '
+            f"--lock-id {literal_metadata['lock_id']}"
+        )
+        bash = shutil.which("bash")
+        if bash:
+            expansion = subprocess.run(
+                [
+                    bash,
+                    "-c",
+                    f'printf "%s\\n" release [a-zA-Z0-9-]* --lock-id {literal_metadata["lock_id"]}',
+                ],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.splitlines()
+            assert "--force" in expansion
+            assert any(entry.endswith("victim") or entry == "victim" for entry in expansion)
+    script = Path(hook.__file__).parent.parent / "scripts" / "project-lock.py"
+    assert not authorizes_release(command, payload["cwd"], script)
     assert hook.evaluate({**payload, "tool_input": {"command": command}})[0] == 2
+    if alteration == "glob-injection":
+        assert core.inspect(root / "victim")["locked"]
+        assert core.inspect(root / "[a-zA-Z0-9-]*")["locked"]
 
 
 def test_release_exception_requires_existing_lock(release_case):

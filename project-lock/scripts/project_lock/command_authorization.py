@@ -16,13 +16,22 @@ def authorizes_release(command: str, cwd: str, trusted_script: Path) -> bool:
     This deliberately accepts only a simple invocation, not shell programs.
     Reject shell expansion even within quotes because quoting differs by shell.
     """
-    if re.search(r"[;&|<>\r\n`$(){}^%]", command):
+    if re.search(r"[;&|<>\r\n`$(){}^%*?\[\]~]", command):
         return False
     try:
         words = shlex.split(command, posix=False)
     except ValueError:
         return False
-    words = [word[1:-1] if word.startswith(('"', "'")) else word for word in words]
+    words = [
+        word[1:-1]
+        if len(word) >= 2
+        and (
+            (word.startswith('"') and word.endswith('"'))
+            or (word.startswith("'") and word.endswith("'"))
+        )
+        else word
+        for word in words
+    ]
     if len(words) != 6:
         return False
     interpreter, script, operation, target, option, token = words
