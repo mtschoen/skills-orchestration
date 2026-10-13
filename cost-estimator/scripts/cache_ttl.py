@@ -61,9 +61,15 @@ def turns_of(path):
                 entry = json.loads(line)
             except Exception:
                 continue
+            # Transcripts are not uniformly objects: Claude Code writes bare
+            # strings and other scalars as JSONL lines. Guard before .get().
+            if not isinstance(entry, dict):
+                continue
             if entry.get("type") != "assistant":
                 continue
             message = entry.get("message") or {}
+            if not isinstance(message, dict):
+                continue
             message_id = message.get("id")
             if not message_id or message_id in seen:
                 continue
