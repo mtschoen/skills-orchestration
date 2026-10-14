@@ -26,7 +26,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Detect toolchain baked into the runner image
+        id: baked
+        run: bash ci/baked-toolchain.sh python
       - uses: actions/setup-python@v5
+        if: steps.baked.outputs.python != 'true'
         with:
           python-version: '3.13'
       - run: pip install ruff==0.15.15 pytest pytest-cov
