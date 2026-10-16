@@ -185,7 +185,7 @@ def ssh_raw_run(
     }
     if sys.platform == "win32":
         run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    return subprocess.run(argv, **run_kwargs)
+    return subprocess.run(argv, **run_kwargs, check=False)
 
 
 def detect_remote_os(host: str, *, os_override: str | None = None) -> str:
@@ -414,7 +414,7 @@ def ssh_run(
     if sys.platform == "win32":
         run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-    return subprocess.run(argv, **run_kwargs)
+    return subprocess.run(argv, **run_kwargs, check=False)
 
 
 def ssh_put_file(
@@ -970,7 +970,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             file=sys.stdout,
         )
         return 3
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - boundary catch-all, failure is reported not raised
         print(
             json.dumps(
                 {
@@ -1049,7 +1049,7 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
             )
         )
         return 0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - boundary catch-all, failure is reported not raised
         print(
             json.dumps(
                 {
@@ -1168,7 +1168,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
         parsed["host"] = args.host
         print(json.dumps(parsed, indent=2))
         return 0
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - boundary catch-all, failure is reported not raised
         print(
             json.dumps(
                 {

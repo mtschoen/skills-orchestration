@@ -33,7 +33,9 @@ jobs:
         if: steps.baked.outputs.python != 'true'
         with:
           python-version: '3.13'
-      - run: pip install ruff==0.15.15 pytest pytest-cov
+      - name: Install pinned ruff and test tools
+        shell: bash
+        run: pip install "ruff==$(cat ci/ruff-version)" pytest pytest-cov
       - name: agent-remote
         working-directory: agent-remote
         run: |

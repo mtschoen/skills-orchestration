@@ -211,7 +211,7 @@ class RemoteAgentInvocationTests(unittest.TestCase):
             # Run the decoded bootstrap in an isolated namespace
             namespace: dict = {}
             with self.assertRaises(SystemExit) as cm:
-                exec(decoded, namespace)
+                exec(decoded, namespace)  # noqa: S102 - runs the bootstrap under test
 
         self.assertEqual(cm.exception.code, 0)
 
@@ -258,7 +258,7 @@ class RemoteAgentInvocationTests(unittest.TestCase):
         ):
             namespace: dict = {}
             with self.assertRaises(SystemExit) as cm:
-                exec(decoded, namespace)
+                exec(decoded, namespace)  # noqa: S102 - runs the bootstrap under test
 
         self.assertEqual(cm.exception.code, 0)
         self.assertTrue(run_mock.called)
@@ -295,7 +295,7 @@ class RemoteAgentInvocationTests(unittest.TestCase):
         ):
             namespace: dict = {}
             with self.assertRaises(SystemExit) as cm:
-                exec(decoded, namespace)
+                exec(decoded, namespace)  # noqa: S102 - runs the bootstrap under test
 
         self.assertEqual(cm.exception.code, 0)
         self.assertTrue(run_mock.called)

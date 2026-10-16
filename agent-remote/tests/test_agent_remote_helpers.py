@@ -195,36 +195,42 @@ class DetectOsTests(unittest.TestCase):
         ]
         for process in scenarios:
             with self.subTest(stdout=process.stdout, stderr=process.stderr):
-                with patch.object(
-                    agent_remote,
-                    "ssh_raw_run",
-                    return_value=process,
-                ):
-                    with self.assertRaisesRegex(
+                with (
+                    patch.object(
+                        agent_remote,
+                        "ssh_raw_run",
+                        return_value=process,
+                    ),
+                    self.assertRaisesRegex(
                         RuntimeError, "Could not determine remote OS"
-                    ):
-                        agent_remote.detect_remote_os("inconclusive@host")
+                    ),
+                ):
+                    agent_remote.detect_remote_os("inconclusive@host")
                 self.assertIsNone(agent_remote.get_cached_host_os("inconclusive@host"))
 
     def test_detect_remote_os_raises_on_ssh_exit_255_and_does_not_cache(self) -> None:
-        with patch.object(
-            agent_remote,
-            "ssh_raw_run",
-            return_value=completed_process(255, stderr="ssh: Connection refused\n"),
+        with (
+            patch.object(
+                agent_remote,
+                "ssh_raw_run",
+                return_value=completed_process(255, stderr="ssh: Connection refused\n"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "SSH connection failed"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "SSH connection failed"):
-                agent_remote.detect_remote_os("offline@host")
+            agent_remote.detect_remote_os("offline@host")
 
         self.assertIsNone(agent_remote.get_cached_host_os("offline@host"))
 
     def test_detect_remote_os_raises_on_timeout_and_does_not_cache(self) -> None:
-        with patch.object(
-            agent_remote,
-            "ssh_raw_run",
-            side_effect=subprocess.TimeoutExpired("ssh", 15),
+        with (
+            patch.object(
+                agent_remote,
+                "ssh_raw_run",
+                side_effect=subprocess.TimeoutExpired("ssh", 15),
+            ),
+            self.assertRaises(subprocess.TimeoutExpired),
         ):
-            with self.assertRaises(subprocess.TimeoutExpired):
-                agent_remote.detect_remote_os("hanging@host")
+            agent_remote.detect_remote_os("hanging@host")
 
         self.assertIsNone(agent_remote.get_cached_host_os("hanging@host"))
 
@@ -278,7 +284,7 @@ class SshTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0)
-        positional_arguments, keyword_arguments = run.call_args
+        positional_arguments, _keyword_arguments = run.call_args
         self.assertEqual(
             positional_arguments[0],
             ["ssh", "-o", "BatchMode=yes", "worker@example", "echo %COMSPEC% & ver"],

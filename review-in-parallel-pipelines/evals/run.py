@@ -48,7 +48,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-
 AGENT_PROMPT_TEMPLATE = """{skill_section}You are running a Claude Code session as the orchestrator of a parallel implementation effort. You have full tools in your current directory (Read, Grep, Glob, Edit, Write, Bash) and can run git.
 
 ## Task from the human
@@ -108,6 +107,7 @@ def materialize_workspace(scenario_dir: Path, workspace_dir: Path) -> None:
             encoding="utf-8",
             errors="replace",
             timeout=120,
+            check=False,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -144,6 +144,7 @@ def invoke_agent(
             timeout=timeout,
             env=env,
             cwd=str(workspace_dir),
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return "", {"_error": f"agent timeout after {timeout}s"}
@@ -277,7 +278,7 @@ def main():
         for future in as_completed(futures):
             try:
                 unit, outcome = future.result()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - boundary catch-all, failure is reported not raised
                 unit = futures[future]
                 outcome = {"status": "error", "error": f"_do raised: {e}"}
             eval_entry, config, run_dir = unit

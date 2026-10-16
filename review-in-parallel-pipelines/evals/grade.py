@@ -149,6 +149,7 @@ def _check_llm_judge(workspace: Path, response: str, indicator: dict) -> RubricM
             errors="replace",
             timeout=LLM_JUDGE_TIMEOUT_SECONDS,
             env=env,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         return RubricMatch(
@@ -581,7 +582,7 @@ def main():
             unit = futures[future]
             try:
                 record = future.result()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - boundary catch-all, failure is reported not raised
                 record = {
                     "eval_id": unit.eval_id,
                     "eval_name": unit.eval_name,
