@@ -28,6 +28,17 @@ version_output() {
   printf '%s\n' "$output"
 }
 
+# Write a launcher per module into a venv bin directory that runs the module under
+# that directory's own interpreter, as a pip-installed entry point would.
+write_venv_launchers() {
+  local venv_bin="$1" module
+  shift
+  for module in "$@"; do
+    printf '#!/bin/sh\nexec "%s/python" -m %s "$@"\n' "$venv_bin" "$module" > "$venv_bin/$module" \
+      && chmod 0755 "$venv_bin/$module" || return 1
+  done
+}
+
 baked() {
   local version
   case "$1" in
@@ -42,12 +53,17 @@ baked() {
       local python_bin="/opt/fleet/python-${FLEET_PYTHON_VERSION:-}/bin"
       # The baked interpreter is uv-installed and PEP 668 marked, so pip refuses
       # to install into it; a virtual environment over it is the writable
-      # interpreter actions/setup-python would provide.
+      # interpreter actions/setup-python would provide. System site packages
+      # expose the baked coverage, psutil and pytest, but their launchers
+      # (/usr/bin/pytest, /usr/local/bin/coverage) carry base-interpreter shebangs,
+      # so the venv gets its own pytest and coverage launchers bound to the venv
+      # interpreter; otherwise venv-only packages fail to import under them.
       local python_venv="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/baked-python"
       [[ -n "${FLEET_PYTHON_VERSION:-}" ]] \
         && version="$(version_output "$python_bin/python" --version)" \
         && [[ "$version" == "Python $FLEET_PYTHON_VERSION" ]] \
-        && "$python_bin/python" -m venv "$python_venv" \
+        && "$python_bin/python" -m venv "$python_venv" --system-site-packages \
+        && write_venv_launchers "$python_venv/bin" pytest coverage \
         && printf '%s\n' "$python_venv/bin" >> "$GITHUB_PATH"
       ;;
     shellcheck)
