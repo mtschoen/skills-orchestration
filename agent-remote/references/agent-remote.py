@@ -2,6 +2,7 @@
 """
 agent-remote.py - spawn an agent session (claude, opencode, agy, pi, or codex) on a remote host
 to do work in an isolated git worktree, capture a structured result, return.
+Kept as one standalone script so remote invocations need no package installation.
 
 The "open a terminal" affordance for agent orchestrators: instead of piping
 each command over ssh, hand a task to a remote agent session running
@@ -50,6 +51,7 @@ import json
 import ntpath
 import os
 import posixpath
+import re
 
 # CRITICAL: must run before any subprocess imports/usage so the child env
 # inherits the override. On Windows + Git Bash / MSYS, ssh.exe's argv is
@@ -61,23 +63,17 @@ import posixpath
 os.environ.setdefault("MSYS_NO_PATHCONV", "1")
 os.environ.setdefault("MSYS2_ARG_CONV_EXCL", "*")
 
+import secrets
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 
-# --------------------------------------------------------------------------
-# Narrow allowlist written into the REMOTE worktree's .claude/settings.local.json
-# before launching `claude -p`. This is what gives the spawned session its
-# permissions without needing --permission-mode bypassPermissions.
-#
-# Narrow by tool *count*, not by what "Bash" can do (see the per-entry note
-# below): anything the remote session needs that isn't in this list will
-# still prompt, but claude -p is non-interactive, so prompts become denials.
-# If a task needs something unusual (sudo, network tools, etc.), the CALLER
-# should widen this via --extra-allow "Bash(sudo *)" etc.
-# --------------------------------------------------------------------------
+# Written into the remote worktree's .claude/settings.local.json before claude -p.
+# Noninteractive permission prompts become denials; callers can add tools through
+# --extra-allow without enabling bypassPermissions. Bash itself is unrestricted.
 DEFAULT_REMOTE_ALLOWLIST: list[str] = [
     "Bash",  # full Bash - trust model assumes `host` is the user's own
     # machine. The worktree isolates the checkout/branch, not the OS: it does
@@ -131,17 +127,18 @@ class RunResult:
         return json.dumps(payload, indent=2)
 
 
-# --------------------------------------------------------------------------
-# ssh helpers & remote OS detection
-# --------------------------------------------------------------------------
-
-
 #: PATH prefix injected before every remote POSIX command. Ensures user-local
 #: install dirs (~/.local/bin, ~/.npm-global/bin, ~/bin) are reachable
 #: from non-interactive ssh sessions, where many distros' login shells
 #: leave them off PATH. Without this, `claude`, `opencode`, `agy`, `pipx`-installed
 #: tools, and a lot of npm-global binaries are mysteriously "not found."
 REMOTE_PATH_PREFIX = "$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/bin"
+
+#: PowerShell expression whose output is `Win32NT` on Windows hosts.
+WINDOWS_PLATFORM_EXPRESSION = "[Environment]::OSVersion.Platform"
+
+#: Number of random bytes behind the token in a bootstrap's temporary file name.
+BOOTSTRAP_TOKEN_BYTES = 8
 
 #: In-memory cache of detected remote host OS types ('windows' or 'posix').
 _HOST_OS_CACHE: dict[str, str] = {}
@@ -237,17 +234,12 @@ def detect_remote_os(host: str, *, os_override: str | None = None) -> str:
 
     # Probe 2: If not affirmative POSIX, probe for Windows.
     # Uses PowerShell to detect Windows independently of cmd.exe built-ins,
-    # working under both cmd.exe and PowerShell OpenSSH DefaultShell.
-    # We encode the command to UTF-16LE Base64 (-EncodedCommand) so it
-    # contains no quotes, spaces, or $ signs, preventing outer-shell variable
-    # expansion under a PowerShell OpenSSH DefaultShell.
-    powershell_detection_script = "$env:OS"
-    encoded_detection_script = base64.b64encode(
-        powershell_detection_script.encode("utf-16-le")
-    ).decode("ascii")
+    # working under cmd.exe, PowerShell and Git Bash OpenSSH login shells.
+    # The inline expression has no quotes, spaces, or $ signs, so no outer
+    # shell expands or splits it.
     win_result = ssh_raw_run(
         host,
-        f"powershell -NoProfile -EncodedCommand {encoded_detection_script}",
+        f"powershell -NoProfile -NonInteractive -Command {WINDOWS_PLATFORM_EXPRESSION}",
         timeout=15,
     )
     if win_result.returncode == 255:
@@ -256,7 +248,7 @@ def detect_remote_os(host: str, *, os_override: str | None = None) -> str:
             f"exit 255\nstderr: {win_result.stderr.strip()}"
         )
     win_stdout = win_result.stdout.strip().lower()
-    if win_result.returncode == 0 and "windows" in win_stdout:
+    if win_result.returncode == 0 and "win32nt" in win_stdout:
         _HOST_OS_CACHE[host] = "windows"
         return "windows"
 
@@ -417,6 +409,216 @@ def ssh_run(
     return subprocess.run(argv, **run_kwargs, check=False)
 
 
+def scp_upload(
+    host: str,
+    local_path: str,
+    remote_name: str,
+    *,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    """Copy a local file to `remote_name` (relative to the remote home directory)."""
+    argv = ["scp", "-q", "-o", "BatchMode=yes", local_path, f"{host}:{remote_name}"]
+    env = {**os.environ, "MSYS_NO_PATHCONV": "1", "MSYS2_ARG_CONV_EXCL": "*"}
+    run_kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "env": env,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "stdin": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.run(argv, **run_kwargs, check=False)
+
+
+def ps_literal(value: str) -> str:
+    """Render `value` as a single-quoted PowerShell string literal."""
+    escaped = re.sub(r"['\u2018\u2019\u201a\u201b]", r"\g<0>\g<0>", value)
+    return f"'{escaped}'"
+
+
+def build_powershell_bootstrap(token: str) -> str:
+    """
+    Build the remote command that runs a PowerShell script read from stdin.
+
+    The command reads all of stdin as UTF-8, writes it to a temporary .ps1 file
+    named after `token` (with a byte order mark so Windows PowerShell reads it
+    as UTF-8), runs that file, deletes it, and exits with the script's exit
+    code. The command line carries no script text and no encoded data.
+
+    The text contains no dollar sign and no double quote, so the same command
+    survives bash (which expands dollar signs inside double quotes), cmd.exe
+    and PowerShell login shells unchanged.
+    """
+    if not token or any(character not in "0123456789abcdef" for character in token):
+        raise ValueError("bootstrap token must be lowercase hex")
+    script_path = f"(Join-Path ([IO.Path]::GetTempPath()) 'agent-remote-{token}.ps1')"
+    statements = [
+        f"Set-Variable script_path {script_path}",
+        "[Console]::InputEncoding=[Text.UTF8Encoding]::new(0)",
+        (
+            "try { [IO.File]::WriteAllText((Get-Variable script_path -ValueOnly), [Console]::In.ReadToEnd(), "
+            "[Text.UTF8Encoding]::new(1)); & (Get-Variable script_path -ValueOnly) } catch { throw } "
+            "finally { Remove-Item -LiteralPath (Get-Variable script_path -ValueOnly) -Force -ErrorAction SilentlyContinue }"
+        ),
+        "exit (Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore)",
+    ]
+    bootstrap = "; ".join(statements)
+    if "$" in bootstrap or '"' in bootstrap:
+        raise ValueError("bootstrap must not contain a dollar sign or double quote")
+    return f'powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "{bootstrap}"'
+
+
+def build_powershell_cleanup(
+    token: str,
+    *,
+    include_payload: bool = True,
+) -> str:
+    """Attempt every artifact and report lookup/removal errors, but allow absence."""
+    script_temp_name = f"agent-remote-{token}.ps1"
+    paths = []
+    if include_payload:
+        paths.append(f"agent-remote-{token}.dat")
+    paths.append(f"(Join-Path ([IO.Path]::GetTempPath()) '{script_temp_name}')")
+    # Keep the aggregate status dollar-free for every supported login shell.
+    statements = ["Set-Variable cleanup_status 0"]
+    for path in paths:
+        statements.append(
+            f"try {{ if (Test-Path -LiteralPath {path} -ErrorAction Stop) {{ "
+            f"Remove-Item -LiteralPath {path} -Force -ErrorAction Stop }} }} "
+            "catch { [Console]::Error.WriteLine((Get-Variable Error -ValueOnly)[0]); "
+            "Set-Variable cleanup_status 1 }"
+        )
+    statements.append("exit (Get-Variable cleanup_status -ValueOnly)")
+    return (
+        "powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+        f'"{"; ".join(statements)}"'
+    )
+
+
+def cleanup_remote_powershell_files(
+    host: str,
+    token: str,
+    *,
+    include_payload: bool = True,
+    timeout: float | None = None,
+) -> str | None:
+    """Attempt removing staged PowerShell artifacts; return a warning on failure."""
+    cleanup_command = build_powershell_cleanup(token, include_payload=include_payload)
+    try:
+        cleanup_result = ssh_run(
+            host, cleanup_command, timeout=timeout, os_type="windows"
+        )
+        if cleanup_result.returncode != 0:
+            detail = (
+                cleanup_result.stderr.strip()
+                if cleanup_result.stderr and cleanup_result.stderr.strip()
+                else f"exit status {cleanup_result.returncode}"
+            )
+            return f"warning: could not remove remote files: {detail}"
+        return None
+    except (OSError, subprocess.SubprocessError) as cleanup_exc:
+        return f"warning: could not remove remote files: {cleanup_exc}"
+
+
+def ssh_run_powershell(
+    host: str,
+    script: str,
+    *,
+    payload: bytes | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    """
+    Run a PowerShell script on a Windows remote through one ssh connection.
+
+    The script travels on ssh's stdin as UTF-8 and a short bootstrap command
+    (see `build_powershell_bootstrap`) saves it to a temporary file, runs it,
+    and deletes it. Nothing is encoded or decoded on the command line, so
+    cmd.exe, PowerShell and Git Bash login shells all behave the same, and
+    the script can be any size.
+
+    The script's `exit N` becomes ssh's exit status under cmd.exe and Git Bash
+    login shells. Under a PowerShell login shell the status collapses to 0 or
+    1, so a caller that needs the precise code should have the script print it.
+
+    `payload`, when given, is copied with scp to the remote home directory and
+    exposed to the script as `$payloadPath`. The script removes the payload
+    when it finishes; if the run fails, a follow-up command removes it again
+    in case the script never started (for example after a parse error).
+    """
+    token = secrets.token_hex(BOOTSTRAP_TOKEN_BYTES)
+    payload_name = f"agent-remote-{token}.dat"
+    payload_binding = ""
+    wrapped = script
+    if payload is not None:
+        payload_binding = (
+            f"$payloadPath = Join-Path (Get-Location) {ps_literal(payload_name)}\n"
+        )
+        wrapped = (
+            f"{payload_binding}"
+            "try {\n"
+            f"{script}\n"
+            "} finally {\n"
+            "    Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue\n"
+            "}\n"
+        )
+
+    def _cleanup_remote_files() -> str | None:
+        return cleanup_remote_powershell_files(
+            host,
+            token,
+            include_payload=payload is not None,
+            timeout=timeout,
+        )
+
+    result: subprocess.CompletedProcess
+    if payload is None:
+        try:
+            result = ssh_run(
+                host,
+                build_powershell_bootstrap(token),
+                input_text=wrapped,
+                timeout=timeout,
+                os_type="windows",
+            )
+        except (OSError, subprocess.SubprocessError):
+            cleanup_warning = _cleanup_remote_files()
+            if cleanup_warning:
+                print(cleanup_warning, file=sys.stderr)
+            raise
+    else:
+        with tempfile.TemporaryDirectory() as staging:
+            payload_file = os.path.join(staging, payload_name)
+            with open(payload_file, "wb") as handle:
+                handle.write(payload)
+            try:
+                result = scp_upload(host, payload_file, payload_name, timeout=timeout)
+                if result.returncode == 0:
+                    result = ssh_run(
+                        host,
+                        build_powershell_bootstrap(token),
+                        input_text=wrapped,
+                        timeout=timeout,
+                        os_type="windows",
+                    )
+            except (OSError, subprocess.SubprocessError):
+                cleanup_warning = _cleanup_remote_files()
+                if cleanup_warning:
+                    print(cleanup_warning, file=sys.stderr)
+                raise
+
+    if result.returncode != 0:
+        cleanup_warning = _cleanup_remote_files()
+        if cleanup_warning:
+            result_stderr = result.stderr or ""
+            result.stderr = "\n".join(
+                part for part in (result_stderr, cleanup_warning) if part
+            )
+    return result
+
+
 def ssh_put_file(
     host: str,
     remote_path: str,
@@ -428,28 +630,27 @@ def ssh_put_file(
     Write `content` to `remote_path` on the remote host.
 
     On POSIX remotes, uses stdin redirection with `cat >`.
-    On Windows remotes, streams base64 payload over stdin to PowerShell to avoid
-    command-line length limits, create parent directories, and write bytes.
+    On Windows remotes, copies the content with scp and moves it into place
+    from a PowerShell script sent over ssh stdin, creating parent directories
+    on the way.
     """
     if os_type is None:
         os_type = detect_remote_os(host)
 
     if os_type == "windows":
-        b64_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        escaped_path = remote_path.replace("'", "''")
         ps_script = (
-            f"$path = [System.IO.Path]::GetFullPath('{escaped_path}'); "
-            "$parent = [System.IO.Path]::GetDirectoryName($path); "
-            "if ($parent -and -not (Test-Path $parent)) { "
-            "New-Item -ItemType Directory -Path $parent -Force | Out-Null "
-            "}; "
-            "$raw = [Console]::In.ReadToEnd(); "
-            "if (-not $raw) { $raw = ($input | Out-String) }; "
-            "[System.IO.File]::WriteAllBytes($path, [System.Convert]::FromBase64String($raw.Trim()))"
+            "$ErrorActionPreference = 'Stop'\n"
+            f"$path = [System.IO.Path]::GetFullPath({ps_literal(remote_path)})\n"
+            "$parent = [System.IO.Path]::GetDirectoryName($path)\n"
+            "if ($parent -and -not (Test-Path -LiteralPath $parent)) {\n"
+            "    New-Item -ItemType Directory -Path $parent -Force | Out-Null\n"
+            "}\n"
+            "if (Test-Path -LiteralPath $path -PathType Container) {\n"
+            "    throw 'Destination path is an existing directory: ' + $path\n"
+            "}\n"
+            "Move-Item -LiteralPath $payloadPath -Destination $path -Force"
         )
-        encoded_script = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
-        cmd = f"powershell -NoProfile -EncodedCommand {encoded_script}"
-        result = ssh_run(host, cmd, input_text=b64_content, os_type=os_type)
+        result = ssh_run_powershell(host, ps_script, payload=content.encode("utf-8"))
     else:
         parent = posixpath.dirname(remote_path)
         cmd = f"mkdir -p {qrp(parent, os_type=os_type)} && cat > {qrp(remote_path, os_type=os_type)}"
@@ -479,11 +680,6 @@ def ssh_check(
             f"stderr: {result.stderr}"
         )
     return result.stdout
-
-
-# --------------------------------------------------------------------------
-# Remote worktree management
-# --------------------------------------------------------------------------
 
 
 def compute_worktree_path(
@@ -599,11 +795,6 @@ def seed_settings(
         json.dumps(settings, indent=2) + "\n",
         os_type=os_type,
     )
-
-
-# --------------------------------------------------------------------------
-# The remote agent invocation
-# --------------------------------------------------------------------------
 
 
 def _build_claude_args(permission_mode: str, model: str | None) -> list[str]:
@@ -782,11 +973,6 @@ def run_remote_agent(
     return result.returncode, result.stdout, stderr
 
 
-# --------------------------------------------------------------------------
-# Result collection
-# --------------------------------------------------------------------------
-
-
 def collect_result(
     host: str,
     worktree_path: str,
@@ -862,11 +1048,6 @@ def collect_result(
         stderr_tail=agent_stderr[-5000:] if agent_stderr else "",
         cleanup_command=cleanup_command,
     )
-
-
-# --------------------------------------------------------------------------
-# Subcommands
-# --------------------------------------------------------------------------
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -1065,12 +1246,16 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
 
 
 def build_probe_command(repo_path: str, os_type: str) -> str:
-    """Build OS-appropriate probe command."""
+    """
+    Build the OS-appropriate probe.
+
+    POSIX remotes get a shell command line; Windows remotes get PowerShell
+    script text for `ssh_run_powershell`.
+    """
     if os_type == "windows":
-        escaped_repo = repo_path.replace("'", "''")
         ps_script = (
             "$ErrorActionPreference = 'SilentlyContinue'; "
-            f"$repoPath = '{escaped_repo}'; "
+            f"$repoPath = {ps_literal(repo_path)}; "
             "$gitVer = (git --version 2>$null | Out-String).Trim(); "
             "$claudeVer = (claude --version 2>$null | Out-String).Trim(); "
             "$agyVer = (agy --version 2>$null | Out-String).Trim(); "
@@ -1108,8 +1293,7 @@ def build_probe_command(repo_path: str, os_type: str) -> str:
             "}; "
             "$data | ConvertTo-Json -Compress"
         )
-        encoded = base64.b64encode(ps_script.encode("utf-16-le")).decode("ascii")
-        return f"powershell -NoProfile -EncodedCommand {encoded}"
+        return ps_script
 
     return (
         "printf '{'; "
@@ -1148,8 +1332,11 @@ def cmd_probe(args: argparse.Namespace) -> int:
         else:
             set_host_os(args.host, os_type)
 
-        probe_cmd = build_probe_command(args.repo_path, os_type)
-        result = ssh_run(args.host, probe_cmd, os_type=os_type)
+        probe = build_probe_command(args.repo_path, os_type)
+        if os_type == "windows":
+            result = ssh_run_powershell(args.host, probe)
+        else:
+            result = ssh_run(args.host, probe, os_type=os_type)
         if result.returncode != 0:
             print(
                 json.dumps(
@@ -1180,11 +1367,6 @@ def cmd_probe(args: argparse.Namespace) -> int:
             )
         )
         return 1
-
-
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -658,9 +658,9 @@ class ProbeCommandTests(unittest.TestCase):
         with (
             patch.object(
                 agent_remote,
-                "ssh_run",
+                "ssh_run_powershell",
                 return_value=completed_process(stdout=probe_json),
-            ) as ssh_run,
+            ) as run_powershell,
             redirect_stdout(output),
         ):
             exit_code = agent_remote.cmd_probe(
@@ -672,10 +672,8 @@ class ProbeCommandTests(unittest.TestCase):
             )
 
         self.assertEqual(exit_code, 0)
-        raw_cmd = ssh_run.call_args.args[1]
-        self.assertIn("powershell -NoProfile -EncodedCommand", raw_cmd)
-        b64_part = raw_cmd.split()[-1]
-        decoded_script = base64.b64decode(b64_part).decode("utf-16-le")
+        decoded_script = run_powershell.call_args.args[1]
+        self.assertNotIn("EncodedCommand", decoded_script)
         self.assertIn("C:/Users/operator/schoen-lab", decoded_script)
         self.assertIn("cmd /c ver", decoded_script)
         self.assertIn("(Get-Process -Id $PID).Path", decoded_script)
@@ -703,8 +701,7 @@ class ProbeCommandTests(unittest.TestCase):
         self.assertIn('"${SHELL:-}"', posix_probe)
 
         windows_probe = agent_remote.build_probe_command("C:/repo", "windows")
-        b64_part = windows_probe.split()[-1]
-        decoded = base64.b64decode(b64_part).decode("utf-16-le")
+        decoded = windows_probe
         self.assertIn("(Get-Process -Id $PID).Path", decoded)
         self.assertIn("configured_shell = $confShell", decoded)
         self.assertIn("$env:COMSPEC", decoded)

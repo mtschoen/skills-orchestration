@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import subprocess
 import unittest
@@ -148,7 +147,7 @@ class DetectOsTests(unittest.TestCase):
             "ssh_raw_run",
             side_effect=[
                 completed_process(127, stderr="uname: command not found\n"),
-                completed_process(0, stdout="Windows_NT\r\n"),
+                completed_process(0, stdout="Win32NT\r\n"),
             ],
         ) as raw_run:
             os_type = agent_remote.detect_remote_os("operator@windows-host")
@@ -157,12 +156,14 @@ class DetectOsTests(unittest.TestCase):
         self.assertEqual(raw_run.call_count, 2)
         self.assertEqual(raw_run.call_args_list[0].args[1], "uname -s")
         powershell_command = raw_run.call_args_list[1].args[1]
-        self.assertIn("powershell -NoProfile -EncodedCommand", powershell_command)
+        self.assertEqual(
+            powershell_command,
+            "powershell -NoProfile -NonInteractive -Command "
+            "[Environment]::OSVersion.Platform",
+        )
+        self.assertNotIn("EncodedCommand", powershell_command)
         self.assertNotIn("$", powershell_command)
         self.assertNotIn('"', powershell_command)
-        base64_payload = powershell_command.split("-EncodedCommand ")[1].strip()
-        decoded_script = base64.b64decode(base64_payload).decode("utf-16-le")
-        self.assertEqual(decoded_script, "$env:OS")
         # Second call reads from cache
         self.assertEqual(
             agent_remote.detect_remote_os("operator@windows-host"), "windows"
@@ -324,49 +325,18 @@ class SshTests(unittest.TestCase):
         self.assertIn("cat > /srv/worktree/file.txt", remote_command)
         self.assertEqual(ssh_run.call_args.kwargs["input_text"], "contents")
 
-    def test_put_file_uses_powershell_base64_on_windows(self) -> None:
-        with (
-            patch.object(agent_remote.sys, "platform", "linux"),
-            patch.object(
-                agent_remote, "ssh_run", return_value=completed_process()
-            ) as ssh_run,
-        ):
-            agent_remote.ssh_put_file(
-                "host", "C:/srv/worktree/file.txt", "contents", os_type="windows"
-            )
-
-        remote_command = ssh_run.call_args.args[1]
-        self.assertIn("powershell -NoProfile -EncodedCommand", remote_command)
-        b64_part = remote_command.split()[-1]
-        decoded_script = base64.b64decode(b64_part).decode("utf-16-le")
-        self.assertIn("FromBase64String", decoded_script)
-        self.assertIn("WriteAllBytes", decoded_script)
-        expected_b64 = base64.b64encode(b"contents").decode("ascii")
-        self.assertEqual(ssh_run.call_args.kwargs["input_text"], expected_b64)
-
-    def test_put_file_streams_large_payload_over_stdin_without_bloating_cli_on_windows(
-        self,
-    ) -> None:
-        large_content = "A" * 10_000
-        with (
-            patch.object(agent_remote.sys, "platform", "linux"),
-            patch.object(
-                agent_remote, "ssh_run", return_value=completed_process()
-            ) as ssh_run,
-        ):
-            agent_remote.ssh_put_file(
-                "host",
-                "C:/srv/worktree/.agent-prompt.txt",
-                large_content,
-                os_type="windows",
-            )
-
-        remote_command = ssh_run.call_args.args[1]
-        # Command line stays compact and well within cmd.exe 8191 limit
-        self.assertLess(len(remote_command), 2000)
-        self.assertNotIn("AAAA", remote_command)
-        expected_b64 = base64.b64encode(large_content.encode("utf-8")).decode("ascii")
-        self.assertEqual(ssh_run.call_args.kwargs["input_text"], expected_b64)
+    def test_ps_literal_doubles_single_quotes(self) -> None:
+        cases = [
+            ("ascii_apostrophe", "it's", "'it''s'"),
+            (
+                "unicode_single_quotes",
+                "it's a \u2018test\u2019 \u201afile\u201b",
+                "'it''s a \u2018\u2018test\u2019\u2019 \u201a\u201afile\u201b\u201b'",
+            ),
+        ]
+        for name, value, expected in cases:
+            with self.subTest(case=name):
+                self.assertEqual(agent_remote.ps_literal(value), expected)
 
     def test_put_file_reports_remote_failure(self) -> None:
         with (

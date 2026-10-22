@@ -148,7 +148,7 @@ The `run` output is JSON on stdout: `{success, branch, worktree_path, parent_com
 **Remote (per host you'll target):**
 
 1. **Target agent CLI must be installed.** E.g., `claude`, `opencode`, `agy`, `pi`, or `codex`. The wrapper's `probe` subcommand reports their presence.
-2. **An ssh key authorized for passwordless login.** `ssh-copy-id user@host` once.
+2. **An ssh key authorized for passwordless login.** `ssh-copy-id user@host` once. Windows remotes need only `sshd` for running commands; uploading files with `put_file` uses `scp` (Windows OpenSSH enables its `sftp` subsystem by default).
 3. **An existing checkout of the repo** at a known path on the remote. The wrapper creates a *sibling* worktree under `<parent-of-repo>/agent-remote-worktrees/`; it does not modify the existing checkout.
 
 When using `claude` as the remote agent, the wrapper writes a narrow `.claude/settings.local.json` into each remote worktree before launching it, so it has Bash/Edit/Write/Read/Glob/Grep without needing `--permission-mode bypassPermissions`. Note: "narrow" means few tools, not low power - the seeded allowlist includes unrestricted Bash inside the remote worktree; see "Permission modes" below for the full caveat and the tightening knob. For `opencode` and `agy`, permissions are bypassed/approved automatically using `--auto` or `--dangerously-skip-permissions` flags.
@@ -161,7 +161,7 @@ When using `claude` as the remote agent, the wrapper writes a narrow `.claude/se
 | Writing the local half of a task in your live working tree | Pollutes the live tree with parallel-implementation duplicates of files the remote also wrote | Use a local worktree (`git worktree add ...`) for the local half OR delegate the whole task to the remote |
 | Expecting the remote to see your local uncommitted changes | The remote starts from its own `git HEAD` - your local working state is invisible to it | `git push` your branch first, then `ssh host 'git -C /repo fetch'`. See "How code flows between local and remote" above |
 | Expecting the wrapper to bring remote-authored files back to local | The wrapper returns SHA + filenames but does NOT pull files | `git fetch <remote> <branch-name>` after the run completes, then merge/cherry-pick. See edge cases above |
-| Trying `scp` to push files to the remote | Often denied by sandbox harnesses | Wrapper writes files via stdin redirect - handled |
+| Trying `scp` to push files to the remote | Often denied by sandbox harnesses | Wrapper writes files itself: stdin redirect on POSIX remotes; on Windows remotes it sends the PowerShell script on ssh stdin to a short bootstrap command that saves it to a temporary `.ps1`, runs it and deletes it (one ssh call, no `scp`, never `-EncodedCommand`); uploaded payload files still go over `scp` - handled |
 | Assuming `~/.local/bin` is on remote PATH | Agent, pipx tools, npm-globals "not found" in non-interactive ssh | Wrapper prepends `~/.local/bin:~/.npm-global/bin:~/bin` - handled |
 | Running `nvcc`/`cmake`/`conda` over plain `ssh host 'cmd'` | Mysterious "not found" because non-interactive PATH lacks `/opt/cuda/bin` etc. | Wrapper uses `bash -lc` so login-shell PATH applies - handled |
 | Passing remote paths from Git Bash on Windows | MSYS converts `/home/x` to `C:/Program Files/Git/home/x` in argv before Python sees it | Wrapper detects and reverses the prefix - handled. As fallback, pass `//home/x` or set `MSYS_NO_PATHCONV=1` |
