@@ -1,9 +1,13 @@
 ---
 name: remote-handoff
-description: Use when the user is about to leave the machine but wants to start or continue agent work from their phone or another device later - "kick off the next session remotely", "I'm heading out, leave a session I can drive from my phone", "can I start this from claude.ai", or at the end of a wrap when the follow-up session must run on THIS machine's hardware (a device-attached test rig, a GPU box, a Steam Deck). Leaves a fresh, remotely controllable interactive session idle in tmux, hands the user its URL, and records how to reattach locally.
+description: "Use when the user is leaving and wants to drive agent work later from a phone or another device, including after a wrap when follow-up needs this machine's hardware. Leaves a fresh interactive session idle in tmux with verified remote readiness, its URL, and local reattach instructions."
 ---
 
 # remote-handoff
+
+## When to use
+
+Use when the user is about to leave the machine but wants to start or continue agent work from their phone or another device later - "kick off the next session remotely", "I'm heading out, leave a session I can drive from my phone", "can I start this from claude.ai", or at the end of a wrap when the follow-up session must run on THIS machine's hardware (a device-attached test rig, a GPU box, a Steam Deck). Leaves a fresh, remotely controllable interactive session idle in tmux, hands the user its URL, and records how to reattach locally.
 
 ## Overview
 
@@ -81,7 +85,7 @@ driveable before the operator departs.
 
 5. If the user reports the session is missing from the list, inspect
    `tmux capture-pane -pt <name>` before taking any action. Seeing
-   `Connected · <repo>` with `Capacity: M/N` and an `environment=` URL confirms
+   `Connected` followed by the repo name, with `Capacity: M/N` and an `environment=` URL, confirms
    server mode (`claude remote-control`), but recognizing server mode does not
    establish that session creation failed or that stopping the server is safe.
    Work through this diagnosis:

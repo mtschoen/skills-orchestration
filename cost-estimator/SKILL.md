@@ -1,6 +1,6 @@
 ---
 name: cost-estimator
-description: Use when the user asks for retrospective Claude Code cost or active-time analysis over a date range, including spend, top sessions, cache discipline, subscription leverage, time spent waiting, or time spent on slash commands such as /wrap.
+description: "Use when the user asks for retrospective Claude Code cost or active-time analysis over a date range, including spend, top sessions, cache discipline, subscription leverage, waiting, or slash commands such as /wrap. Reports transcript-based cost and measured active time."
 ---
 
 # cost-estimator (retrospective)
@@ -16,6 +16,8 @@ from the transcript. It is not inferred from gaps between timestamps, so idle
 time between prompts is excluded.
 
 ## When to invoke
+
+Use when the user asks for retrospective Claude Code cost or active-time analysis over a date range, including spend, top sessions, cache discipline, subscription leverage, time spent waiting, or time spent on slash commands such as /wrap.
 
 The user's intent is retrospective spend analysis when they say things
 like "what did I spend last month", "/cost estimate April", "audit my
@@ -135,7 +137,7 @@ Most invocations need three things; ask only when not obvious:
    Produces an HTML chart at `~/.agents/cost-estimator/reports/trend-<range>.html`.
    Bars stack per-machine cost in each bucket; right-axis line shows
    the cumulative total. Bucket size auto-picks from range length
-   (≤14d→day, ≤90d→week, >90d→month) or override with `--bucket`.
+   (<=14d->day, <=90d->week, >90d->month) or override with `--bucket`.
 7. **Compare two windows side-by-side.** When the user asks "is my
    spend trending up/down?" or "how does this week compare to last?",
    render the period-over-period overlay:
@@ -181,7 +183,7 @@ Most invocations need three things; ask only when not obvious:
 
    Reports the `ephemeral_5m` vs `ephemeral_1h` split of cache-write
    tokens and a behavioral inter-turn-gap table (a high "miss%" in the
-   5–60m buckets would betray a 5m TTL letting prefixes expire).
+   5-60m buckets would betray a 5m TTL letting prefixes expire).
    Subscription accounts write 1h-TTL by default.
 10. **Offer to save.** If the analysis was substantive, save the report
    to `~/.agents/cost-estimator/reports/<range>.md`. That directory lives
@@ -293,7 +295,7 @@ was never present in the billed aggregate.
 - Dollar backfill of cache-cleared days. `stats_cache.py` *detects* and
   *quantifies* cleared days (coverage %, cleared in+out tokens) but does
   not estimate their dollars. `/stats` `dailyModelTokens` is raw
-  (non-deduped, ~3.2× hot), carries no input/output split (only a
+  (non-deduped, ~3.2x hot), carries no input/output split (only a
   per-model in+out sum), and excludes cache entirely - so any backfilled
   dollar figure would be a coarse guess stacked on three approximations.
   Deferred until that estimation can be designed deliberately; for now

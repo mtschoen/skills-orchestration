@@ -1,6 +1,6 @@
 ---
 name: review-in-parallel-pipelines
-description: "Use when orchestrating 2+ implementer agents in parallel against isolated branches or worktrees and you reach a merge point - branches returning with green reports, deciding what to merge, declaring a round done, or moving to the next parallel phase. Fires on the reflex to merge-on-green and move on (subagent-driven-development parallel mode, dispatching-parallel-agents, fleet orchestration). The moment that feels like 'all branches merged, build green, clear to proceed' is exactly when this applies. Single-agent-at-a-time runs don't need it."
+description: "Use when 2+ concurrent implementer agents on isolated branches or worktrees reach a merge point, return green reports, finish a round, or move to the next phase. Requires per-branch and integrated round-boundary review before proceeding; single-agent-at-a-time runs do not need it."
 ---
 
 # Review in Parallel Pipelines
@@ -16,6 +16,8 @@ Running N agents concurrently is an *execution* pattern. Review is *orthogonal* 
 This is **orchestrator -> branches** review. It sits on top of `superpowers:subagent-driven-development` (which covers per-task review for one agent at a time) and adds the layer that pattern lacks: review across *many concurrent* agents per phase.
 
 ## When this fires / when not
+
+Use when orchestrating 2+ implementer agents in parallel against isolated branches or worktrees and you reach a merge point - branches returning with green reports, deciding what to merge, declaring a round done, or moving to the next parallel phase. Fires on the reflex to merge-on-green and move on (subagent-driven-development parallel mode, dispatching-parallel-agents, fleet orchestration). The moment that feels like 'all branches merged, build green, clear to proceed' is exactly when this applies. Single-agent-at-a-time runs don't need it.
 
 Fires for any execution pattern with **>=2 concurrent implementer agents** landing into isolated branches/worktrees:
 

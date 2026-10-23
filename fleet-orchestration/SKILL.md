@@ -1,9 +1,13 @@
 ---
 name: fleet-orchestration
-description: "Use when dispatching subagents across multiple LOCAL PROJECT REPOSITORIES - feature implementation, maintenance sweeps, or fleet-wide investigation across the user's project directory. Triggers: 'spawn agents to fix X across all my projects', 'run a maintenance pass', 'work on tasks from several repos at once', reserving or releasing a slot in a persistent warm worktree pool on a project whose first build is expensive (a large node_modules, a Rust target/, a populated ccache, a game engine's asset database), use of project-tracker MCP tools (list_projects, find_dirty, find_stale_maintenance) to plan multi-repo work. Extends superpowers:dispatching-parallel-agents with cross-repo governance. project-tracker MCP tools are optional - without them, use the project-tracker CLI (project-tracker list --json). Fleet-wide enumeration requires project-tracker installed; without it, the user names the target repositories explicitly. Requires the superpowers plugin (dispatching-parallel-agents)."
+description: "Use when dispatching across multiple local repositories, planning fleet work with project-tracker, or reserving or releasing warm worktree pool slots for costly builds. Extends superpowers parallel dispatch with cross-repo task triage, isolation, result review, and pool governance. Requires the superpowers plugin; fleet-wide enumeration needs project-tracker."
 ---
 
 # Fleet Orchestration
+
+## When to use
+
+Use when dispatching subagents across multiple LOCAL PROJECT REPOSITORIES - feature implementation, maintenance sweeps, or fleet-wide investigation across the user's project directory. Triggers: 'spawn agents to fix X across all my projects', 'run a maintenance pass', 'work on tasks from several repos at once', reserving or releasing a slot in a persistent warm worktree pool on a project whose first build is expensive (a large node_modules, a Rust target/, a populated ccache, a game engine's asset database), use of project-tracker MCP tools (list_projects, find_dirty, find_stale_maintenance) to plan multi-repo work. Extends superpowers:dispatching-parallel-agents with cross-repo governance. project-tracker MCP tools are optional - without them, use the project-tracker CLI (project-tracker list --json). Fleet-wide enumeration requires project-tracker installed; without it, the user names the target repositories explicitly. Requires the superpowers plugin (dispatching-parallel-agents).
 
 ## Relationship to `superpowers:dispatching-parallel-agents`
 
@@ -13,17 +17,17 @@ This skill adds the layer that's specific to working **across multiple repositor
 
 | Concern | Parent skill | This skill |
 |---|---|---|
-| When to parallelize | ✅ | inherits |
-| Agent prompt structure | ✅ | inherits, adds repo-specific must-includes |
-| One codebase, multiple bugs | ✅ | - |
-| Multiple repos, one task each | - | ✅ |
-| Pre-dispatch task selection / triage | - | ✅ |
-| User pre-approval shortlist | - | ✅ |
-| Result triage (orchestrator answers questions) | - | ✅ |
-| Maintenance vs feature dual mode | - | ✅ |
-| Maintenance breadcrumbs (`.maintenance.json`) | - | ✅ |
-| Cross-repo permission inheritance | - | ✅ |
-| Worktree isolation is intra-repo only | - | ✅ |
+| When to parallelize | yes | inherits |
+| Agent prompt structure | yes | inherits, adds repo-specific must-includes |
+| One codebase, multiple bugs | yes | - |
+| Multiple repos, one task each | - | yes |
+| Pre-dispatch task selection / triage | - | yes |
+| User pre-approval shortlist | - | yes |
+| Result triage (orchestrator answers questions) | - | yes |
+| Maintenance vs feature dual mode | - | yes |
+| Maintenance breadcrumbs (`.maintenance.json`) | - | yes |
+| Cross-repo permission inheritance | - | yes |
+| Worktree isolation is intra-repo only | - | yes |
 
 If you're fixing 3 unrelated test failures in **one** project, use the parent skill alone. If you're picking tasks from PLAN.md files across **N** projects, use both.
 
@@ -64,15 +68,15 @@ A feature pass needs the triage gate and user pre-approval below. A maintenance 
 For each candidate task, before spawning anything, answer four questions:
 
 1. **Is the scope crisp?** Does the PLAN bullet name a specific file/feature, or is it an aspiration ("improve UX")?
-2. **Are there hidden coupling questions?** Spend 2–3 minutes reading the surrounding code. If a single field/function turns out to be load-bearing across many files, the task is not bounded. (Real example: a "filename" column that turns out to be a lookup key in five other modules - looks like a label, isn't.)
+2. **Are there hidden coupling questions?** Spend 2-3 minutes reading the surrounding code. If a single field/function turns out to be load-bearing across many files, the task is not bounded. (Real example: a "filename" column that turns out to be a lookup key in five other modules - looks like a label, isn't.)
 3. **Would a human need to make a product call mid-implementation?** "Should rename touch disk?" "Which interpretation of this note?" If yes, no agent should be touching it.
-4. **Is the test surface trustworthy?** Tests-pass ≠ correct-behavior when the task is about semantics rather than mechanics.
+4. **Is the test surface trustworthy?** Tests-pass != correct-behavior when the task is about semantics rather than mechanics.
 
 ### Decision
 
-- **Green** (all four pass) → eligible for dispatch.
-- **Yellow** (one concern) → eligible, but the agent's brief must include "stop and report if you hit X."
-- **Red** (two+ concerns, or product call required) → **drop from the dispatch list**. Produce a handoff prompt for the user (see below).
+- **Green** (all four pass) -> eligible for dispatch.
+- **Yellow** (one concern) -> eligible, but the agent's brief must include "stop and report if you hit X."
+- **Red** (two+ concerns, or product call required) -> **drop from the dispatch list**. Produce a handoff prompt for the user (see below).
 
 Triage runs **before** the user pre-approval step - the user shouldn't have to evaluate red tasks at all.
 
@@ -235,9 +239,9 @@ Instead, pre-provision a small pool of long-lived worktrees, each keeping its ow
 
 ```text
 <repo>/
-├── <main checkout>      <- the user's, warm
-├── .worktrees/pool1/    <- pool slot, warm
-└── .worktrees/pool2/    <- pool slot, warm
++-- <main checkout>      <- the user's, warm
++-- .worktrees/pool1/    <- pool slot, warm
++-- .worktrees/pool2/    <- pool slot, warm
 ```
 
 Each slot is created once with `git worktree add`, built once to populate its cache, and then reused across sessions. An agent runs `git fetch` and checks out its branch in the slot, and the incremental build touches only what actually changed.
@@ -338,8 +342,8 @@ Quick format reference (full schema in `references/maintenance-format.md`):
 
 **Staleness rules** (already enforced by project-tracker):
 
-- `per-commit` → stale when `last_run_commit != git rev-parse HEAD`
-- `time-based` → stale when `now - last_run > interval_days`
+- `per-commit` -> stale when `last_run_commit != git rev-parse HEAD`
+- `time-based` -> stale when `now - last_run > interval_days`
 - A task with `status: "failed"` at the **same** HEAD is **not** stale - re-running a failed task at an unchanged commit will fail again. Wait for HEAD to move.
 
 **Runner contract:**
@@ -356,7 +360,7 @@ Quick format reference (full schema in `references/maintenance-format.md`):
 
 ```text
 1. mcp__project-tracker__find_stale_maintenance(task_name="push-latest")
-   → ["myrepo", "site"]                  # other repos clean, skipped
+   -> ["myrepo", "site"]                  # other repos clean, skipped
 2. For each stale project:
    - cd into repo
    - run the operation
