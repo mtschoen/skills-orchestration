@@ -1,9 +1,13 @@
 ---
 name: external-harness-routing
-description: Use when diverting work from the metered primary harness to other installed agent CLIs to conserve its quota or to reach models it does not offer. Triggers include "run this on a cheaper harness", "save my Claude tokens", "use another subscription for this sweep", "which agent CLIs are installed here", fan-out jobs where built-in subagents would burn the scarce pool, or before hand-rolling headless CLI calls to claude, codex, gemini, agy, opencode, kimi, qwen, pi, or muse.
+description: "Use when conserving primary-harness quota, reaching unavailable models, inventorying installed agent CLIs, planning fan-out on other pools, or before hand-rolling headless CLI calls. Inventories and routes work by tier to other harnesses with tracked dispatch and report files."
 ---
 
 # external-harness-routing
+
+## When to use
+
+Use when diverting work from the metered primary harness to other installed agent CLIs to conserve its quota or to reach models it does not offer. Triggers include "run this on a cheaper harness", "save my Claude tokens", "use another subscription for this sweep", "which agent CLIs are installed here", fan-out jobs where built-in subagents would burn the scarce pool, or before hand-rolling headless CLI calls to claude, codex, gemini, agy, opencode, kimi, qwen, pi, or muse.
 
 ## Overview
 

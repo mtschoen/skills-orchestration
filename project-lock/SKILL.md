@@ -1,9 +1,13 @@
 ---
 name: project-lock
-description: Use before making changes in any project or repository, especially when a session reaches outside its starting working directory. Checks for a cooperative project lock, acquires one before writes, chooses wait versus worktree when another agent holds it, renews estimates during long work, and releases locks when leaving. Also use when the user asks which projects are locked, whether a repo is busy, or to clear an abandoned agent lock, and when a person is driving a checkout themselves with an editor open or a test run in flight, where no lock file represents them.
+description: "Use when making changes in any project, querying or clearing agent locks, or coordinating with a human using the checkout. Checks and acquires cooperative locks before writes, chooses waiting or worktree isolation, renews estimates, and releases locks on exit."
 ---
 
 # project-lock
+
+## When to use
+
+Use before making changes in any project or repository, especially when a session reaches outside its starting working directory. Checks for a cooperative project lock, acquires one before writes, chooses wait versus worktree when another agent holds it, renews estimates during long work, and releases locks when leaving. Also use when the user asks which projects are locked, whether a repo is busy, or to clear an abandoned agent lock, and when a person is driving a checkout themselves with an editor open or a test run in flight, where no lock file represents them.
 
 Coordinate agent writes with an advisory lock at the project or Git worktree root.
 

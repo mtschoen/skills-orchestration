@@ -1,6 +1,6 @@
 ---
 name: agent-remote
-description: Use when delegating work to a different machine because of hardware, OS-specific tooling, locally-installed services, or anything else that physically can't be done on the orchestrator's host. Triggers include "I need to run this on the linux box," "the GPU server has the data," "verify on the production host," any task where verification requires touching a remote machine, or when about to chain multiple ssh commands for multi-step remote work.
+description: "Use when hardware, OS-specific tooling, local services, or verification require another machine, or before chaining SSH commands for multi-step remote work. Delegates to a remote agent in an isolated worktree with persistent shell state and structured results."
 ---
 
 # agent-remote
@@ -36,10 +36,12 @@ However, **you are not restricted to the hosting environment's default.** You ca
 
 ## When to use this skill
 
+Use when delegating work to a different machine because of hardware, OS-specific tooling, locally-installed services, or anything else that physically can't be done on the orchestrator's host. Triggers include "I need to run this on the linux box," "the GPU server has the data," "verify on the production host," any task where verification requires touching a remote machine, or when about to chain multiple ssh commands for multi-step remote work.
+
 - The task touches hardware that only exists on the remote (GPUs, sensors, large disks).
 - The task touches services managed on the remote (systemd units, databases, running daemons).
 - Verification requires real OS-level state on the remote (`/proc/*`, `/sys/*`, `journalctl`, `systemctl`).
-- The work involves more than 2-3 round-trips of edit→run→inspect on the remote.
+- The work involves more than 2-3 round-trips of edit->run->inspect on the remote.
 - You're about to type a multi-line `ssh host '...'` command with embedded heredocs or `&&` chains.
 
 **Don't use this skill for:**
