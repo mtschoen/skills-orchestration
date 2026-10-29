@@ -1,6 +1,6 @@
 # Orchestration
 
-Eleven skills for what changes when work outgrows one agent, one machine, or one
+Seven skills for what changes when work outgrows one agent, one machine, or one
 budget.
 
 Single-agent practice does not scale by repetition. The moment a second agent
@@ -21,10 +21,6 @@ These skills are about the seams between agents, machines, and budgets.
 | [`remote-handoff`](remote-handoff/) | Leaving this machine while the next session must still run on it |
 | [`external-harness-routing`](external-harness-routing/) | Which provider's quota a job should spend |
 | [`cost-estimator`](cost-estimator/) | What the quota actually went on |
-| [`find-task`](find-task/) | Choosing work across tracked projects |
-| [`capture-idea`](capture-idea/) | Capturing a brainstorm as a tracked project |
-| [`promote-project`](promote-project/) | Turning an idea folder into a compliant repository |
-| [`project-tracker-cli`](project-tracker-cli/) | Querying and changing tracker state through the CLI |
 
 The last two are a pair. `external-harness-routing` decides where work goes
 before it runs; `cost-estimator` tells you afterwards whether that routing was
@@ -55,6 +51,14 @@ something has to know which repositories are yours. This is stated plainly in
 `fleet-orchestration` rather than papered over with a fallback that does not
 work. Everything else here, including all of the dispatch discipline, runs with
 no such dependency.
+
+## Skills that ship with project-tracker
+
+`find-task`, `capture-idea`, `promote-project` and `project-tracker-cli` do not
+work without the project-tracker module, so they are not part of this family.
+They ship with project-tracker in
+[schoen-lab](https://github.com/mtschoen/schoen-lab) under
+`packages/project_tracker/skills/`.
 
 ## Installing
 
