@@ -95,10 +95,10 @@ In this example:
 
 ## project-tracker integration
 
-project-tracker reads these files via its maintenance scanner module and exposes two MCP tools:
+project-tracker reads these files via its maintenance scanner module and exposes two CLI queries:
 
-- `mcp__project-tracker__get_maintenance_state(name)` → parsed contents
-- `mcp__project-tracker__find_stale_maintenance(task_name?)` → list of stale projects
+- `project-tracker maintenance state <name> --json` -> parsed contents
+- `project-tracker find-stale-maintenance --task <task_name> --json` -> stale projects
 
 The Python helpers (importable from the maintenance scanner module):
 
@@ -107,4 +107,4 @@ The Python helpers (importable from the maintenance scanner module):
 - `is_task_stale(project_path, task_name, *, state=None, head=None, now=None) -> bool`
 - `list_stale_tasks(project_path, task_names=None) -> list[str]`
 
-**Known defect in `write_maintenance_state`:** as of the currently installed project-tracker release, its `.gitignore` handling writes a bare `.maintenance.json` line - a positive ignore rule - instead of the `!.maintenance.json` negation this tracked-file contract requires. Calling it therefore leaves `.maintenance.json` gitignored and absent from `git status`, the opposite of the intended behavior. Runners should still call `write_maintenance_state` for the JSON write (it handles serialization and the `version` default correctly), but must check `.gitignore` afterward: if it contains a bare `.maintenance.json` line, replace it with `!.maintenance.json` and `git add .maintenance.json .gitignore`. Both `write_maintenance_state` and the MCP tools require project-tracker to be installed - it's optional (see SKILL.md). Without it, write the JSON entry directly per the schema above and add the `!.maintenance.json` negation to `.gitignore` yourself; the staleness rules are unaffected either way, since they only depend on the file's contents.
+**Known defect in `write_maintenance_state`:** as of the currently installed project-tracker release, its `.gitignore` handling writes a bare `.maintenance.json` line - a positive ignore rule - instead of the `!.maintenance.json` negation this tracked-file contract requires. Calling it therefore leaves `.maintenance.json` gitignored and absent from `git status`, the opposite of the intended behavior. Runners should still call `write_maintenance_state` for the JSON write (it handles serialization and the `version` default correctly), but must check `.gitignore` afterward: if it contains a bare `.maintenance.json` line, replace it with `!.maintenance.json` and `git add .maintenance.json .gitignore`. Both the Python helpers and CLI require project-tracker to be installed - it's optional (see SKILL.md). Without it, write the JSON entry directly per the schema above and add the `!.maintenance.json` negation to `.gitignore` yourself; the staleness rules are unaffected either way, since they only depend on the file's contents.

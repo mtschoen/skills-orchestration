@@ -1,6 +1,6 @@
 # Orchestration
 
-Seven skills for what changes when work outgrows one agent, one machine, or one
+Eleven skills for what changes when work outgrows one agent, one machine, or one
 budget.
 
 Single-agent practice does not scale by repetition. The moment a second agent
@@ -21,6 +21,10 @@ These skills are about the seams between agents, machines, and budgets.
 | [`remote-handoff`](remote-handoff/) | Leaving this machine while the next session must still run on it |
 | [`external-harness-routing`](external-harness-routing/) | Which provider's quota a job should spend |
 | [`cost-estimator`](cost-estimator/) | What the quota actually went on |
+| [`find-task`](find-task/) | Choosing work across tracked projects |
+| [`capture-idea`](capture-idea/) | Capturing a brainstorm as a tracked project |
+| [`promote-project`](promote-project/) | Turning an idea folder into a compliant repository |
+| [`project-tracker-cli`](project-tracker-cli/) | Querying and changing tracker state through the CLI |
 
 The last two are a pair. `external-harness-routing` decides where work goes
 before it runs; `cost-estimator` tells you afterwards whether that routing was

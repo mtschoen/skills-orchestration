@@ -7,7 +7,7 @@ description: "Use when dispatching across multiple local repositories, planning 
 
 ## When to use
 
-Use when dispatching subagents across multiple LOCAL PROJECT REPOSITORIES - feature implementation, maintenance sweeps, or fleet-wide investigation across the user's project directory. Triggers: 'spawn agents to fix X across all my projects', 'run a maintenance pass', 'work on tasks from several repos at once', reserving or releasing a slot in a persistent warm worktree pool on a project whose first build is expensive (a large node_modules, a Rust target/, a populated ccache, a game engine's asset database), use of project-tracker MCP tools (list_projects, find_dirty, find_stale_maintenance) to plan multi-repo work. Extends superpowers:dispatching-parallel-agents with cross-repo governance. project-tracker MCP tools are optional - without them, use the project-tracker CLI (project-tracker list --json). Fleet-wide enumeration requires project-tracker installed; without it, the user names the target repositories explicitly. Requires the superpowers plugin (dispatching-parallel-agents).
+Use when dispatching subagents across multiple LOCAL PROJECT REPOSITORIES - feature implementation, maintenance sweeps, or fleet-wide investigation across the user's project directory. Triggers: 'spawn agents to fix X across all my projects', 'run a maintenance pass', 'work on tasks from several repos at once', reserving or releasing a slot in a persistent warm worktree pool on a project whose first build is expensive (a large node_modules, a Rust target/, a populated ccache, a game engine's asset database), use of project-tracker CLI commands such as `list`, `find-dirty`, and `find-stale-maintenance` to plan multi-repo work. Extends superpowers:dispatching-parallel-agents with cross-repo governance. Fleet-wide enumeration requires project-tracker installed; without it, the user names the target repositories explicitly. Requires the superpowers plugin (dispatching-parallel-agents).
 
 ## Relationship to `superpowers:dispatching-parallel-agents`
 
@@ -35,7 +35,7 @@ If you're fixing 3 unrelated test failures in **one** project, use the parent sk
 
 This skill has a hard dependency on the superpowers plugin's [`superpowers:dispatching-parallel-agents`](https://github.com/mtschoen/superpowers) skill - see "Relationship" above. Install superpowers before using this skill; there is no standalone fallback.
 
-Fleet-*wide* enumeration additionally requires [project-tracker](https://github.com/mtschoen/schoen-lab) to be installed, reached through either its MCP server or its CLI. Something has to know which repositories are yours, and that is the only thing on the machine that does. Without it, the user names the target repositories and you work from that list. Everything else in this skill - dispatch discipline, triage, base-commit correctness, worktree isolation - carries no such dependency and works anywhere.
+Fleet-*wide* enumeration additionally requires the [project-tracker](https://github.com/mtschoen/schoen-lab) CLI. Something has to know which repositories are yours, and that is the only thing on the machine that does. Without it, the user names the target repositories and you work from that list. Everything else in this skill - dispatch discipline, triage, base-commit correctness, worktree isolation - carries no such dependency and works anywhere.
 
 These skills are designed against the superpowers fork at <https://github.com/mtschoen/superpowers>, which changes upstream's rules around parallel subagent dispatch and plan/spec file handling. Notably, official superpowers 6.2.0 forbids dispatching implementation subagents in parallel; the fork's subagent-driven-development adds Parallel Dispatch (Worktree Isolation). Skills that describe parallel SDD assume the fork.
 
@@ -191,7 +191,7 @@ Seven repair/salvage lanes made 347 pytest, preflight and aislop calls, every on
 
 Start with a fleet-wide pass, then verify per repo before dispatching.
 
-**Fleet-wide**: `mcp__project-tracker__list_projects()` to enumerate the repos you can target, and `mcp__project-tracker__find_dirty()` to see which of them already have uncommitted changes before you touch anything. Without the MCP server, enumerate with `project-tracker list --json` (the tracker's registry is a SQLite database under `~/.project_tracker/`). Without project-tracker installed at all, ask the user which repositories to target and work from the list they give you, per Requirements above. Do not substitute a recursive filesystem scan: an unbounded walk is a hazard in its own right, and finding every checkout on the disk still would not tell you which ones the user counts as part of the fleet. Either way, compute dirtiness with `git -C <repo> status --porcelain` per repo.
+**Fleet-wide**: run `project-tracker list --json` to enumerate the repos you can target and `project-tracker find-dirty --json` to see which already have uncommitted changes before you touch anything. Without project-tracker installed, ask the user which repositories to target and work from the list they give you, per Requirements above. Do not substitute a recursive filesystem scan: an unbounded walk is a hazard in its own right, and finding every checkout on the disk still would not tell you which ones the user counts as part of the fleet. Either way, compute dirtiness with `git -C <repo> status --porcelain` per repo.
 
 **Per target repo**, before dispatching into it: if the `project-lock` skill is installed, it is the authoritative check - run project-lock's `check <repo>` command (its SKILL.md documents the script location and exact invocation) and follow its check/acquire/advice protocol (wait, use a worktree, or proceed, per its own recommendation). It replaces guesswork with an actual advisory lock another agent would have taken.
 
@@ -311,12 +311,12 @@ This is the most important difference between this skill and the parent. The par
 
 ## Maintenance breadcrumbs
 
-Maintenance state lives in each repo as `.maintenance.json`, which is **tracked**, not gitignored: it records which maintenance findings were actioned and which were deliberately rejected, and nothing regenerates that. The machine-wide excludes file ignores it, so a compliant repo's `.gitignore` carries an explicit `!.maintenance.json` negation (see `project-maintenance`'s `references/cross-project-config.md`, "Safe git clean + post-clean init"). project-tracker exposes two MCP tools:
+Maintenance state lives in each repo as `.maintenance.json`, which is **tracked**, not gitignored: it records which maintenance findings were actioned and which were deliberately rejected, and nothing regenerates that. The machine-wide excludes file ignores it, so a compliant repo's `.gitignore` carries an explicit `!.maintenance.json` negation (see `project-maintenance`'s `references/cross-project-config.md`, "Safe git clean + post-clean init"). Use these CLI queries:
 
-- `mcp__project-tracker__get_maintenance_state(name)` - read one project's breadcrumbs
-- `mcp__project-tracker__find_stale_maintenance(task_name?)` - find projects where a task is stale
+- `project-tracker maintenance state <name> --json` - read one project's breadcrumbs
+- `project-tracker find-stale-maintenance --task <task_name> --json` - find projects where a task is stale
 
-Without the MCP server, read each repo's `.maintenance.json` directly (enumerating repos with `project-tracker list --json`, or from the repositories the user named) and compute staleness with git, e.g. `git rev-list <last_run_commit>..HEAD --count`.
+To compute staleness yourself, enumerate repos with `project-tracker list --json` or use the repositories the user named, read each `.maintenance.json`, and compare with git, e.g. `git rev-list <last_run_commit>..HEAD --count`.
 
 Quick format reference (full schema in `references/maintenance-format.md`):
 
@@ -348,7 +348,7 @@ Quick format reference (full schema in `references/maintenance-format.md`):
 
 **Runner contract:**
 
-1. Read current state with `mcp__project-tracker__get_maintenance_state(name)` or directly from disk.
+1. Read current state with `project-tracker maintenance state <name> --json` or directly from disk.
 2. Skip if `is_task_stale` returns False.
 3. Do the work.
 4. Write a new entry with `status` and either `last_run_commit` (per-commit) or `last_run` (time-based). Call `project_tracker.scanner.maintenance.write_maintenance_state` to persist the JSON. **Known helper defect**: the installed `write_maintenance_state` currently appends a *positive* `.maintenance.json` line to `.gitignore` - the opposite of this contract, which requires `.maintenance.json` tracked with a `!.maintenance.json` negation (see `references/maintenance-format.md`). After calling the helper, check `.gitignore` for a bare `.maintenance.json` line; if present, remove it, add `!.maintenance.json` in its place, and `git add .maintenance.json .gitignore`. Without project-tracker installed, skip the helper entirely: write the JSON entry directly, add the `!.maintenance.json` negation to `.gitignore` yourself, and `git add .maintenance.json`.
@@ -359,7 +359,7 @@ Quick format reference (full schema in `references/maintenance-format.md`):
 ### Maintenance pass
 
 ```text
-1. mcp__project-tracker__find_stale_maintenance(task_name="push-latest")
+1. project-tracker find-stale-maintenance --task push-latest --json
    -> ["myrepo", "site"]                  # other repos clean, skipped
 2. For each stale project:
    - cd into repo
@@ -373,9 +373,8 @@ Re-running 5 minutes later returns only `["site"]`. Cheap.
 ### Feature pass
 
 ```text
-1. Identify candidate tasks: mcp__project-tracker__list_projects() to enumerate the fleet
-   (or `project-tracker list --json` without the MCP server; without project-tracker
-   installed, work from the repositories the user names),
+1. Identify candidate tasks: project-tracker list --json to enumerate the fleet
+   (without project-tracker installed, work from the repositories the user names),
    then read PLAN.md from each candidate project.
 2. Triage each (the four questions above). Drop reds, produce handoff prompts.
 3. Present green/yellow shortlist to the user. Wait for approval.

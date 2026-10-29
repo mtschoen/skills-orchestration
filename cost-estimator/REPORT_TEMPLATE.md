@@ -113,11 +113,11 @@ Source: "TOP TOOL CALLS" section of summarize.py output.
 | Bash | 11,417 | 279/739 | 37.8% |
 | ... | | | |
 
-Highlight any MCP tools concentrated in a small number of expensive
+Highlight any external service tools concentrated in a small number of expensive
 sessions - those are typical "specialized work" patterns (e.g. Unity
 sessions, web automation), not waste.
 
-## First-turn input bloat (skill / MCP loader proxy)
+## First-turn input bloat (skill / tool-schema loader proxy)
 
 Source: "FIRST-TURN INPUT TOKENS" section.
 
@@ -133,7 +133,7 @@ paid on the first turn of every fresh session):
 
 Anything over ~50K is worth investigating - that fresh-session toll
 gets paid every time the conversation restarts. Shaving auto-loaded
-plugins/MCPs/skills compounds across sessions.
+plugins/tool schemas/skills compounds across sessions.
 
 ## Daily totals
 
@@ -156,10 +156,10 @@ Sessions with `cost_usd >= 5` and `cache_hit_pct < 70` (from
 `sessions.csv`). If empty, say so explicitly: that means cache is
 working everywhere it should.
 
-### 2. Skill / MCP loader bloat
+### 2. Skill / tool-schema loader bloat
 
 Reference the first-turn input table above. Above ~50K is suspicious;
-flag the slugs for the user to investigate which plugins/MCPs/skills
+flag the slugs for the user to investigate which plugins/tool schemas/skills
 are loading.
 
 ### 3. Subagent fan-out
